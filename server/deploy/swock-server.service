@@ -1,0 +1,22 @@
+[Unit]
+Description=Swock encrypted VPN tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c '/usr/sbin/ip tuntap add dev swock0 mode tun 2>/dev/null || true'
+ExecStartPre=/usr/sbin/ip addr replace 10.8.0.1/24 dev swock0
+ExecStartPre=/usr/sbin/ip link set dev swock0 up
+ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0
+ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :8505,:801 -tls-listen :8443,:80 -tls-cert /etc/letsencrypt/live/cds-fire.disws.shop/fullchain.pem -tls-key /etc/letsencrypt/live/cds-fire.disws.shop/privkey.pem -tun-name swock0
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/dev/net/tun
+
+[Install]
+WantedBy=multi-user.target

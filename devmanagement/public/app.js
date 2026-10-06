@@ -39,7 +39,7 @@ async function loadAccounts() {
     const expired = new Date(account.expires_at) <= new Date();
     const disabled = account.disabled === 1;
     const state = disabled ? 'Disabled' : expired ? 'Expired' : 'Active';
-    return `<tr><td><strong>${escapeHtml(account.username)}</strong><br><small>Created ${formatDate(account.created_at)}</small></td><td>${formatDate(account.expires_at)}</td><td><span class="badge ${state.toLowerCase()}">${state}</span></td><td><button class="action" data-id="${account.id}" data-disabled="${disabled ? '0' : '1'}">${disabled ? 'Enable' : 'Disable'}</button></td></tr>`;
+    return `<tr><td><strong>${escapeHtml(account.username)}</strong><br><small>Created ${formatDate(account.created_at)}</small></td><td>${formatDate(account.expires_at)}</td><td><span class="badge ${state.toLowerCase()}">${state}</span></td><td><button class="action" data-id="${account.id}" data-disabled="${disabled ? '0' : '1'}">${disabled ? 'Enable' : 'Disable'}</button> <button class="action" data-reissue-profile="${account.id}" ${disabled || expired ? 'disabled' : ''}>Reissue profile</button></td></tr>`;
   }).join('') || '<tr><td colspan="4">No VPN accounts created yet.</td></tr>';
 }
 
@@ -100,6 +100,17 @@ credentialList.addEventListener('click', async (event) => {
   setTimeout(() => { button.textContent = 'Copy'; }, 1200);
 });
 accountsBody.addEventListener('click', async (event) => {
+  const reissueButton = event.target.closest('[data-reissue-profile]');
+  if (reissueButton) {
+    if (!window.confirm('Reissue this profile? The current profile will stop connecting after its active session ends.')) return;
+    try {
+      const result = await request(`/api/admin/accounts/${reissueButton.dataset.reissueProfile}/profile`, { method: 'POST' });
+      showCredentials(result.credentials);
+      panelMessage.textContent = 'New profile issued. Share it securely with the account holder.';
+      await loadAccounts();
+    } catch (error) { panelMessage.textContent = error.message; }
+    return;
+  }
   const button = event.target.closest('[data-id]'); if (!button) return;
   try { await request(`/api/admin/accounts/${button.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ disabled: button.dataset.disabled === '1' }) }); await loadAccounts(); }
   catch (error) { panelMessage.textContent = error.message; }

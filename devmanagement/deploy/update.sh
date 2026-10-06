@@ -42,8 +42,10 @@ install -d -m 0755 /usr/local/lib /usr/local/sbin
 install -m 0644 "$repo_root/server/deploy/swock-ssh-manager.js" /usr/local/lib/swock-ssh-manager.js
 install -m 0755 "$repo_root/server/deploy/swock-ssh-account" /usr/local/sbin/swock-ssh-account
 install -m 0644 "$repo_root/server/deploy/swock-ssh-manager.service" /etc/systemd/system/swock-ssh-manager.service
+install -m 0644 "$repo_root/server/deploy/swock-server.service" /etc/systemd/system/swock-server.service
 
 systemctl daemon-reload
 systemctl enable --now swock-ssh-manager.service
-systemctl restart swock-server.service swock-devmanagement.service
+systemctl restart swock-devmanagement.service
+systemctl restart swock-server.service
 echo 'Swock panel, tunnel server, and SSH account manager updated. Existing accounts, signing keys, and environment settings were preserved.'

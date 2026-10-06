@@ -12,26 +12,19 @@ const bcrypt = require('bcryptjs');
 const Database = require('better-sqlite3');
 
 function decodeAdminPassword() {
-  if (process.env.ADMIN_PASSWORD_B64) {
-    return Buffer.from(process.env.ADMIN_PASSWORD_B64, 'base64').toString('utf8');
-  }
+  if (process.env.ADMIN_PASSWORD_B64) return Buffer.from(process.env.ADMIN_PASSWORD_B64, 'base64').toString('utf8');
   return process.env.ADMIN_PASSWORD || '';
 }
 
 function validatePassword(password) {
-  if (typeof password !== 'string') {
-    throw new Error('Password must be text.');
-  }
-  const byteLength = Buffer.byteLength(password, 'utf8');
-  if (byteLength === 0 || byteLength > 4096) {
-    throw new Error('Password must not be empty and must be no more than 4096 UTF-8 bytes.');
-  }
+  if (typeof password !== 'string') throw new Error('Password must be text.');
+  const size = Buffer.byteLength(password, 'utf8');
+  if (size === 0 || size > 4096) throw new Error('Password must not be empty and must be no more than 4096 UTF-8 bytes.');
 }
 
 function hashPassword(password) {
   validatePassword(password);
-  const input = crypto.createHash('sha256').update(password, 'utf8').digest('hex');
-  return bcrypt.hashSync(input, 12);
+  return bcrypt.hashSync(crypto.createHash('sha256').update(password, 'utf8').digest('hex'), 12);
 }
 
 function verifyPassword(password, passwordHash) {
@@ -75,14 +68,21 @@ const accountColumns = database.prepare('PRAGMA table_info(vpn_accounts)').all()
 if (!accountColumns.includes('client_public_key')) {
   database.exec('ALTER TABLE vpn_accounts ADD COLUMN client_public_key TEXT');
 }
+if (!accountColumns.includes('tunnel_ip')) {
+  database.exec('ALTER TABLE vpn_accounts ADD COLUMN tunnel_ip TEXT');
+}
 
 const adminPasswordHash = hashPassword(adminPassword);
 const queries = {
   list: database.prepare('SELECT id, username, expires_at, created_at, disabled FROM vpn_accounts ORDER BY created_at DESC'),
   deleteExpired: database.prepare("DELETE FROM vpn_accounts WHERE julianday(expires_at) <= julianday('now')"),
   findById: database.prepare('SELECT id, username, expires_at, created_at, disabled FROM vpn_accounts WHERE id = ?'),
+  findProfileAccount: database.prepare('SELECT id, username, expires_at, disabled, client_public_key, tunnel_ip FROM vpn_accounts WHERE id = ?'),
   findByUsername: database.prepare('SELECT * FROM vpn_accounts WHERE username = ?'),
-  create: database.prepare('INSERT INTO vpn_accounts (username, password_hash, expires_at, created_at, client_public_key) VALUES (?, ?, ?, ?, ?)'),
+  create: database.prepare('INSERT INTO vpn_accounts (username, password_hash, expires_at, created_at, client_public_key, tunnel_ip) VALUES (?, ?, ?, ?, ?, ?)'),
+  rotateClientKey: database.prepare('UPDATE vpn_accounts SET client_public_key = ?, tunnel_ip = ? WHERE id = ?'),
+  listTunnelIps: database.prepare('SELECT tunnel_ip FROM vpn_accounts WHERE tunnel_ip IS NOT NULL'),
+  assignTunnelIp: database.prepare('UPDATE vpn_accounts SET tunnel_ip = ? WHERE id = ?'),
   update: database.prepare('UPDATE vpn_accounts SET expires_at = ?, disabled = ? WHERE id = ?'),
   resetPassword: database.prepare('UPDATE vpn_accounts SET password_hash = ? WHERE id = ?'),
   remove: database.prepare('DELETE FROM vpn_accounts WHERE id = ?'),
@@ -92,6 +92,20 @@ const queries = {
   findSsh: database.prepare('SELECT * FROM ssh_accounts WHERE id = ?'),
   deleteSsh: database.prepare('DELETE FROM ssh_accounts WHERE id = ?'),
 };
+
+function allocateTunnelAddress() {
+  const used = new Set(queries.listTunnelIps.all().map((row) => row.tunnel_ip));
+  for (let host = 2; host <= 254; host += 1) {
+    const address = `10.8.0.${host}`;
+    if (!used.has(address)) return address;
+  }
+  throw new Error('No free Swock tunnel addresses remain (capacity: 253 accounts).');
+}
+
+for (const account of database.prepare("SELECT id FROM vpn_accounts WHERE client_public_key IS NOT NULL AND tunnel_ip IS NULL AND julianday(expires_at) > julianday('now') ORDER BY id").all()) {
+  queries.assignTunnelIp.run(allocateTunnelAddress(), account.id);
+}
+database.exec('CREATE UNIQUE INDEX IF NOT EXISTS vpn_accounts_tunnel_ip_unique ON vpn_accounts(tunnel_ip) WHERE tunnel_ip IS NOT NULL');
 
 function keyToHex(key, property) {
   return Buffer.from(key.export({ format: 'jwk' })[property], 'base64url').toString('hex');
@@ -119,6 +133,7 @@ function buildProfileUri(account, clientKeys, endpoint) {
     spk: process.env.VPN_SERVER_PUBLIC_KEY || '',
     cpk: clientKeys.privateKey,
     exp: account.expiresAt,
+    ip: account.tunnelIp,
   });
   if (tlsEnabled) {
     parameters.set('tls', '1');
@@ -154,9 +169,8 @@ function buildProfileUris(account, clientKeys) {
 function refreshTunnelAuthorization() {
   const file = process.env.VPN_ALLOWED_KEYS_FILE;
   if (!file) return;
-  const keys = database.prepare("SELECT client_public_key FROM vpn_accounts WHERE disabled = 0 AND client_public_key IS NOT NULL AND julianday(expires_at) > julianday('now')").all()
-    .map((account) => account.client_public_key)
-    .filter(Boolean);
+  const keys = database.prepare("SELECT client_public_key, tunnel_ip FROM vpn_accounts WHERE disabled = 0 AND client_public_key IS NOT NULL AND tunnel_ip IS NOT NULL AND julianday(expires_at) > julianday('now')").all()
+    .map((account) => `${account.client_public_key} ${account.tunnel_ip}`);
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, `${keys.join('\n')}\n`, { mode: 0o640 });
   fs.renameSync(temporary, file);
@@ -168,15 +182,6 @@ function deleteExpiredAccounts() {
 }
 
 function manageSshAccount(action, username, expiresAt, password = '') {
-  if (action === 'create') {
-    const passwordBytes = Buffer.byteLength(password, 'utf8');
-    if (passwordBytes === 0 || passwordBytes > 255) {
-      return Promise.reject(new Error('SSH passwords must be no more than 255 UTF-8 bytes.'));
-    }
-    if (/[\r\n\0]/.test(password)) {
-      return Promise.reject(new Error('SSH passwords cannot contain line breaks or NUL characters.'));
-    }
-  }
   const socketPath = process.env.SSH_MANAGER_SOCKET || '/run/swock-ssh-manager/manager.sock';
   return new Promise((resolve, reject) => {
     const client = net.createConnection({ path: socketPath });
@@ -306,11 +311,13 @@ app.delete('/api/admin/ssh-accounts/:id', requireAdmin, async (request, response
 
 app.post('/api/admin/accounts', requireAdmin, (request, response) => {
   try {
+    deleteExpiredAccounts();
     const account = validateAccountInput(request.body);
+    account.tunnelIp = allocateTunnelAddress();
     const hash = hashPassword(account.password);
       const clientKeys = createClientKeyPair();
       const profileUris = buildProfileUris(account, clientKeys);
-      queries.create.run(account.username, hash, account.expiresAt, new Date().toISOString(), clientKeys.publicKey);
+      queries.create.run(account.username, hash, account.expiresAt, new Date().toISOString(), clientKeys.publicKey, account.tunnelIp);
       refreshTunnelAuthorization();
       return response.status(201).json({
         ok: true,
@@ -321,6 +328,7 @@ app.post('/api/admin/accounts', requireAdmin, (request, response) => {
           server: process.env.VPN_SERVER_HOST || '',
           serverPublicKey: process.env.VPN_SERVER_PUBLIC_KEY || '',
           clientPrivateKey: clientKeys.privateKey,
+          tunnelAddress: account.tunnelIp,
           tlsPort: Number(process.env.VPN_TLS_PORT || 8443),
           websocketPort: Number(process.env.VPN_WS_PORT || 801),
           transport: 'websocketTls',
@@ -331,6 +339,38 @@ app.post('/api/admin/accounts', requireAdmin, (request, response) => {
   } catch (error) {
     const message = error.code === 'SQLITE_CONSTRAINT_UNIQUE' ? 'That username already exists.' : error.message;
     return response.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/admin/accounts/:id/profile', requireAdmin, (request, response) => {
+  try {
+    deleteExpiredAccounts();
+    const account = queries.findProfileAccount.get(Number(request.params.id));
+    if (!account) throw new Error('VPN account not found.');
+    if (account.disabled || new Date(account.expires_at) <= new Date()) {
+      throw new Error('Enable the account and set a future expiry before issuing a profile.');
+    }
+    const clientKeys = createClientKeyPair();
+    const credentials = {
+      username: account.username,
+      expiresAt: account.expires_at,
+      tunnelIp: account.tunnel_ip || allocateTunnelAddress(),
+    };
+    const profileUris = buildProfileUris(credentials, clientKeys);
+    queries.rotateClientKey.run(clientKeys.publicKey, credentials.tunnelIp, account.id);
+    credentials.profileUris = profileUris;
+    credentials.profileUri = profileUris[0].uri;
+    credentials.server = process.env.VPN_SERVER_HOST || '';
+    credentials.serverPublicKey = process.env.VPN_SERVER_PUBLIC_KEY || '';
+    credentials.clientPrivateKey = clientKeys.privateKey;
+    credentials.tunnelAddress = credentials.tunnelIp;
+    credentials.tlsPort = Number(process.env.VPN_TLS_PORT || 8443);
+    credentials.websocketPort = Number(process.env.VPN_WS_PORT || 801);
+    credentials.transport = 'websocketTls';
+    refreshTunnelAuthorization();
+    return response.json({ ok: true, credentials });
+  } catch (error) {
+    return response.status(400).json({ error: error.message });
   }
 });
 

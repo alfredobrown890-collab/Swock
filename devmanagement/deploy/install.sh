@@ -143,7 +143,7 @@ chown -R root:root /opt/swock-devmanagement
 chmod -R go-w /opt/swock-devmanagement
 
 install -d -m 0755 /usr/local/bin
-install -d -m 0755 /usr/local/lib
+install -d -m 0755 /usr/local/lib /usr/local/sbin
 cd "$repo_root/server"
 "$go_bin" build -trimpath -ldflags='-s -w' -o /usr/local/bin/swock-server ./cmd/swock-server
 "$go_bin" build -trimpath -ldflags='-s -w' -o /usr/local/bin/swock-keygen ./cmd/swock-keygen
@@ -260,6 +260,7 @@ Type=simple
 ExecStartPre=/bin/sh -c '/usr/sbin/ip tuntap add dev swock0 mode tun 2>/dev/null || true'
 ExecStartPre=/usr/sbin/ip addr replace 10.8.0.1/24 dev swock0
 ExecStartPre=/usr/sbin/ip link set dev swock0 up
+ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0
 ExecStartPre=/usr/local/sbin/swock-network-setup
 ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :8505,:801 -tls-listen :8443,:9443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
 Restart=on-failure

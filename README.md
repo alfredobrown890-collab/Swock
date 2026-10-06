@@ -6,14 +6,13 @@ The installer is interactive: it asks for separate web-panel and VPN domains, a 
 
 ## Why Swock
 
-- **Per-account access keys:** each VPN account receives its own X25519 client key. The server allowlist controls which keys may start a tunnel, and the panel applies account expiry and disable status to new connections.
-- **Per-account key identities:** each account has an X25519 client key, and profiles pin the expected server key. The server allowlist controls which client identities can start a tunnel.
+- **Per-account access and routing:** each VPN account receives its own X25519 client key and tunnel IP. The server allowlist authorizes that identity, and TUN return packets are routed to that account.
 - **Verified TLS option:** TLS/WSS transports validate the certificate and hostname and protect traffic between the app and VPS from network observers.
 - **Transport choice:** use TCP, WebSocket, TLS, or WebSocket over TLS (WSS) while keeping the same Swock packet protocol. WSS is the configured recommendation; available transports still depend on the VPS and network allowing their ports.
 - **Self-hosted control:** the operator owns the VPS, panel, account database, and server keys; no centrally hosted Swock account service is required.
 - **Device-level VPN integration:** the Android client uses `VpnService` and a TUN interface to send routed IP packets, rather than configuring only an application-level proxy.
 
-Swock uses a custom protocol and is not wire-compatible with WireGuard, OpenVPN, or Shadowsocks. The protocol has not been independently audited as part of this project. This installer currently supports one active tunnel client per VPS at a time; account revocation blocks new handshakes but does not forcibly terminate an already-connected session.
+Swock uses a custom protocol and is not wire-compatible with WireGuard, OpenVPN, or Shadowsocks. The protocol has not been independently audited as part of this project. The VPS can assign addresses to up to 253 accounts (`10.8.0.2`-`10.8.0.254`); each account can have one active connection, and a new connection for that account replaces its previous session. Account revocation blocks new handshakes but does not forcibly terminate an already-connected session.
 
 ## Security Model
 
@@ -24,7 +23,7 @@ The current implementation provides these controls:
 - **Account lifecycle controls:** disable and expiry remove keys from authorization for new handshakes. Expiry cleanup runs every 60 seconds.
 - **Verified transport option:** TLS and WSS encrypt and authenticate the connection to the configured certificate hostname. TCP and plain WebSocket do not have this outer TLS protection.
 
-**Important:** the current `SWK1` packet layer uses one ChaCha20-Poly1305 key for both traffic directions, while both directional packet counters start at zero. This repeats AEAD nonces under the same key and invalidates the packet layer's usual confidentiality/integrity guarantees. Do not rely on TCP or plain WebSocket Swock transport for sensitive traffic. In TLS/WSS modes, rely on verified TLS for on-the-wire transport protection until the `SWK1` nonce/key separation is fixed. This custom protocol has not been independently audited.
+**Important:** new profiles use `SWK2`, which derives different packet keys for the two traffic directions and mixes a fresh random salt into each connection. Legacy `SWK1` profiles reused AEAD nonces and are rejected by default. The custom protocol has not been independently audited. Static long-term X25519 keys mean SWK2 does not yet provide forward secrecy or automatic rekeying.
 
 These controls do not hide connection metadata such as the VPS address, timing, or traffic volume. A profile URI contains the client's private key, so anyone who obtains the URI can use that account. Disable the account and distribute a replacement profile if its URI is exposed. The static-key handshake also lacks forward secrecy and automatic rekeying: compromise of a long-term key could expose recorded sessions made with that key.
 
@@ -32,14 +31,14 @@ These controls do not hide connection metadata such as the VPS address, timing, 
 
 | Property | Swock (current implementation) | WireGuard | OpenVPN |
 | --- | --- | --- | --- |
-| Protocol and maturity | Custom `SWK1`; not independently audited | Purpose-built, widely deployed protocol with mature implementations | Mature, widely deployed TLS-based VPN protocol |
-| Tunnel data protection | ChaCha20-Poly1305 is used, but cross-direction nonce reuse invalidates its normal guarantees; rely on TLS/WSS transport protection until fixed | Noise-based handshake and ChaCha20-Poly1305 transport | TLS control channel plus a configurable data-channel cipher; security depends on configuration |
+| Protocol and maturity | Custom `SWK2`; not independently audited; rejects unsafe SWK1 by default | Purpose-built, widely deployed protocol with mature implementations | Mature, widely deployed TLS-based VPN protocol |
+| Tunnel data protection | ChaCha20-Poly1305 with per-direction keys and per-session salt; no forward secrecy yet | Noise-based handshake and ChaCha20-Poly1305 transport | TLS control channel plus a configurable data-channel cipher; security depends on configuration |
 | Peer identity | Per-account X25519 public key allowlist; server key pinned in profile | Static public-key peer identities | Commonly certificates, with optional username/password authentication |
 | Forward secrecy and rekeying | No ephemeral handshake keys or session rekeying currently | Ephemeral handshake keys and automatic key rotation | Available through TLS cipher/session configuration; depends on configuration |
 | Transports | TCP, WebSocket, TLS, WSS | UDP | UDP or TCP |
-| Current server capacity | One active tunnel client per VPS | Designed to support multiple peers | Supports multiple clients |
+| Current server capacity | Up to 253 accounts; one connection per account | Designed to support multiple peers | Supports multiple clients |
 
-Swock's practical advantages are its self-hosted account panel, per-account key issuance, and selectable TCP/WebSocket/TLS transports using the same client profile format. It should not be described as more secure than WireGuard or OpenVPN: those protocols have much more deployment and review history. In particular, because Swock currently derives session keys from long-term client and server keys without forward secrecy, compromise of a long-term key could expose previously recorded sessions made with that key. For high-sensitivity or multi-user deployments, use a mature, independently reviewed VPN protocol until Swock's handshake, rekeying, and concurrency limitations have been addressed and reviewed.
+Swock's practical advantages are its self-hosted panel, per-account key issuance and routing, and selectable TCP/WebSocket/TLS transports using the same profile format. It should not be described as more secure than WireGuard or OpenVPN: those protocols have much more deployment and review history. Because Swock still uses static keys without forward secrecy, compromise of a long-term key could expose recorded sessions made with that key. For high-sensitivity use, choose a mature, independently reviewed VPN protocol.
 
 ## Requirements
 
@@ -68,6 +67,17 @@ The installer installs Node.js, Go, Nginx, Certbot, and required system packages
 The VPN hostname is embedded in accounts' `swock://` profile URIs. Sign in to the web panel using the URL and credentials chosen during installation, create an account with an expiry, and send its profile URI privately to the user to import into the Swock app. The URI contains a private client key and must be treated as a credential.
 
 The installer does not modify an existing Swock installation. It does not configure the provider firewall, an existing UFW/firewalld routing policy, or IPv6 egress. Follow the [full VPS guide](devmanagement/README.md) for firewall routing, updates, backups, protocol details, and current service limits.
+
+## Upgrade Existing Installations
+
+SWK2 requires a matching updated Android app and VPS server. Update users to a SWK2-capable app first, then update the VPS from its existing checkout:
+
+```bash
+git pull --ff-only
+sudo bash devmanagement/deploy/update.sh
+```
+
+The updated server rejects legacy SWK1 by default. In the panel, choose **Reissue profile** for each active VPN account and privately send the replacement URI to that user. The account username, password, expiry, and assigned address remain unchanged; the client key rotates. Do not enable `--allow-legacy-swk1` during normal operation because legacy SWK1 repeats AEAD nonces.
 
 ## Update
 
