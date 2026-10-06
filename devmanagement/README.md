@@ -59,6 +59,8 @@ Connection setup and data flow:
 5. Each IP packet is encrypted with ChaCha20-Poly1305 and sent as a 4-byte big-endian frame length followed by the ciphertext. Each direction uses its own increasing packet counter as the AEAD nonce.
 6. The VPS injects received packets into the `swock0` TUN interface and forwards return packets through the same encrypted connection.
 
+**Security warning:** in the current `SWK1` implementation, both traffic directions use the same ChaCha20-Poly1305 session key and each direction starts its packet counter at zero. This repeats AEAD nonces under the same key, so do not rely on the inner packet layer's normal confidentiality/integrity guarantees. Do not use plain TCP or WebSocket transport for sensitive traffic until directional keys/nonces are separated. TLS/WSS adds verified TLS transport protection in transit. The protocol remains custom and unaudited, and static keys mean it does not currently provide forward secrecy.
+
 The TLS/WebSocket transport ports installed by this guide are:
 
 | Transport | Port | Protection |
