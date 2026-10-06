@@ -38,7 +38,6 @@ These controls do not hide connection metadata such as the VPS address, timing, 
 | Transports | TCP, WebSocket, TLS, WSS | UDP | UDP or TCP |
 | Current server capacity | Up to 253 accounts; one connection per account | Designed to support multiple peers | Supports multiple clients |
 
-Swock's practical advantages are its self-hosted panel, per-account key issuance and routing, and selectable TCP/WebSocket/TLS transports using the same profile format. It should not be described as more secure than WireGuard or OpenVPN: those protocols have much more deployment and review history. Because Swock still uses static keys without forward secrecy, compromise of a long-term key could expose recorded sessions made with that key. For high-sensitivity use, choose a mature, independently reviewed VPN protocol.
 
 ## Requirements
 
