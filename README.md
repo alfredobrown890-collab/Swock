@@ -4,6 +4,16 @@ Install a self-hosted Swock VPN server and account web panel on a Debian or Ubun
 
 The installer is interactive: it asks for separate web-panel and VPN domains, a certificate contact email, a panel username, and a panel password. Password entry is hidden and confirmed before setup.
 
+## Why Swock
+
+- **Per-account access keys:** each VPN account receives its own X25519 client key. The server allowlist controls which keys may start a tunnel, and the panel applies account expiry and disable status to new connections.
+- **Encrypted, authenticated packets:** the `SWK1` tunnel derives a session key with X25519 and protects IP packet frames with ChaCha20-Poly1305. Profiles pin the expected server public key so the app can reject a server-key mismatch.
+- **Transport choice:** use TCP, WebSocket, TLS, or WebSocket over TLS (WSS) while keeping the same Swock packet protocol. WSS is the configured recommendation; available transports still depend on the VPS and network allowing their ports.
+- **Self-hosted control:** the operator owns the VPS, panel, account database, and server keys; no centrally hosted Swock account service is required.
+- **Device-level VPN integration:** the Android client uses `VpnService` and a TUN interface to send routed IP packets, rather than configuring only an application-level proxy.
+
+Swock uses a custom protocol and is not wire-compatible with WireGuard, OpenVPN, or Shadowsocks. The protocol has not been independently audited as part of this project. This installer currently supports one active tunnel client per VPS at a time; account revocation blocks new handshakes but does not forcibly terminate an already-connected session.
+
 ## Requirements
 
 - A fresh Debian or Ubuntu VPS with a public IPv4 address and `/dev/net/tun`
