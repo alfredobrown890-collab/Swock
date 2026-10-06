@@ -97,16 +97,18 @@ curl -fsS https://<panel-domain>/api/health
 
 ## Local Development
 
+`.env.example` is only a starting point for running the panel manually during development. VPS users do not copy or edit it: `deploy/install.sh` prompts for each installation's panel/VPN domains and admin credentials, then writes the production environment file. The installer's tunnel listener ports and generated panel settings are kept matched.
+
 ```bash
 cd devmanagement
 cp .env.example .env
-# Set unique SESSION_SECRET and ADMIN_PASSWORD values.
+# Set unique SESSION_SECRET and ADMIN_PASSWORD values for local use only.
 # Set VPN_SERVER_HOST and VPN_SERVER_PUBLIC_KEY to match a running Swock server.
 npm ci
 npm start
 ```
 
-The panel is available at `http://localhost:8080`. For issued profiles to import successfully, `VPN_SERVER_HOST` and a 64-character hexadecimal `VPN_SERVER_PUBLIC_KEY` are required. `VPN_ALLOWED_KEYS_FILE` must point to the allowlist file consumed by the matching Swock tunnel server. Do not use placeholder values for a real install.
+The panel is available at `http://localhost:8080`. The example transport ports are TCP `8505`, WebSocket `801`, TLS `8443`, and WSS `9443`; they must match the listener flags of the local tunnel server. For issued profiles to import successfully, `VPN_SERVER_HOST` and a 64-character hexadecimal `VPN_SERVER_PUBLIC_KEY` are required. `VPN_ALLOWED_KEYS_FILE` must point to the allowlist file consumed by the matching Swock tunnel server. Do not use placeholder values for a real install.
 
 ## API
 
