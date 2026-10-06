@@ -29,7 +29,7 @@
         <header class="panel-header"><div><p class="eyebrow">ACCOUNT DIRECTORY</p><h2>VPN access</h2></div><button id="logout-button" class="quiet">Sign out</button></header>
         <form id="account-form" class="account-form">
           <label>Username<input name="username" minlength="3" maxlength="32" required></label>
-          <label>Temporary password<input name="password" type="password" minlength="12" required></label>
+          <label>Temporary password<input name="password" type="password" maxlength="4096" required></label>
           <label>Expires at<input name="expiresAt" type="datetime-local" required></label>
           <button type="submit">Create account</button>
         </form>
@@ -44,7 +44,7 @@
           <header class="panel-header"><div><p class="eyebrow">VPS ACCESS</p><h2>SSH accounts</h2></div></header>
           <form id="ssh-account-form" class="account-form">
             <label>SSH username<input name="username" minlength="3" maxlength="32" required></label>
-            <label>Temporary password<input name="password" type="password" minlength="12" required></label>
+            <label>Temporary password<input name="password" type="password" maxlength="255" required></label>
             <label>Expires at<input name="expiresAt" type="datetime-local" required></label>
             <button type="submit">Create SSH account</button>
           </form>

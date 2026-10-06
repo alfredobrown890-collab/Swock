@@ -8,6 +8,10 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
   echo 'Run this script from a complete Swock checkout.' >&2
   exit 1
 }
+[[ -f "$repo_root/server/deploy/swock-ssh-manager.js" && -f "$repo_root/server/deploy/swock-ssh-account" && -f "$repo_root/server/deploy/swock-ssh-manager.service" ]] || {
+  echo 'The checkout is missing the SSH account manager deployment files.' >&2
+  exit 1
+}
 [[ -f /etc/swock-devmanagement.env && -f /etc/swock-server.private ]] || {
   echo 'No installed Swock server found; use install.sh for a fresh installation.' >&2
   exit 1
@@ -34,6 +38,12 @@ cd "$repo_root/server"
 "$go_bin" build -trimpath -ldflags='-s -w' -o "$build_directory/swock-keygen" ./cmd/swock-keygen
 install -m 0755 "$build_directory/swock-server" /usr/local/bin/swock-server
 install -m 0755 "$build_directory/swock-keygen" /usr/local/bin/swock-keygen
+install -d -m 0755 /usr/local/lib /usr/local/sbin
+install -m 0644 "$repo_root/server/deploy/swock-ssh-manager.js" /usr/local/lib/swock-ssh-manager.js
+install -m 0755 "$repo_root/server/deploy/swock-ssh-account" /usr/local/sbin/swock-ssh-account
+install -m 0644 "$repo_root/server/deploy/swock-ssh-manager.service" /etc/systemd/system/swock-ssh-manager.service
 
+systemctl daemon-reload
+systemctl enable --now swock-ssh-manager.service
 systemctl restart swock-server.service swock-devmanagement.service
-echo 'Swock panel and tunnel server updated. Existing accounts, signing keys, and environment settings were preserved.'
+echo 'Swock panel, tunnel server, and SSH account manager updated. Existing accounts, signing keys, and environment settings were preserved.'

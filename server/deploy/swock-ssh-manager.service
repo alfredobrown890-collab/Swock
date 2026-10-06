@@ -1,0 +1,19 @@
+[Unit]
+Description=Swock restricted SSH account manager
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=swock
+RuntimeDirectory=swock-ssh-manager
+RuntimeDirectoryMode=0750
+Environment=SSH_MANAGER_SOCKET=/run/swock-ssh-manager/manager.sock
+ExecStart=/usr/bin/node /usr/local/lib/swock-ssh-manager.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -24,9 +24,9 @@ cd Swock
 sudo bash devmanagement/deploy/install.sh
 ```
 
-Enter the panel domain, VPN domain, certificate email, and panel login credentials when prompted. Use a password of at least 16 characters containing letters, numbers, or `. _ @ % + = : -`.
+Enter the panel domain, VPN domain, certificate email, and panel login credentials when prompted. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes; the installer hides and confirms it. VPN account passwords also have no minimum length and may be up to 4096 UTF-8 bytes. The optional Linux SSH accounts accept single-line passwords up to 255 UTF-8 bytes.
 
-The installer installs Node.js, Go, Nginx, Certbot, and required system packages; builds the panel dependencies and Go tunnel server; obtains a Let's Encrypt certificate for both domains; generates the server key; configures the TUN device, IPv4 forwarding/NAT, and systemd services; and stores panel configuration securely in `/etc/swock-devmanagement.env`.
+The installer installs Node.js, Go, Nginx, Certbot, and required system packages; builds the panel dependencies and Go tunnel server; installs the panel's restricted SSH account manager; obtains a Let's Encrypt certificate for both domains; generates the server key; configures the TUN device, IPv4 forwarding/NAT, and systemd services; and stores panel configuration securely in `/etc/swock-devmanagement.env`.
 
 The VPN hostname is embedded in accounts' `swock://` profile URIs. Sign in to the web panel using the URL and credentials chosen during installation, create an account with an expiry, and send its profile URI privately to the user to import into the Swock app. The URI contains a private client key and must be treated as a credential.
 

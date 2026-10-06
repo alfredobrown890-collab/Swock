@@ -18,12 +18,12 @@ Port `80` is used by Nginx and Let's Encrypt. Port `443` serves the HTTPS admin 
 After the repository is published, clone it on the VPS and run the installer from the checkout. Replace the GitHub URL with your repository URL:
 
 ```bash
-git clone https://github.com/OWNER/swock.git
-cd swock
+git clone https://github.com/alfredobrown890-collab/Swock.git
+cd Swock
 sudo bash devmanagement/deploy/install.sh
 ```
 
-During installation, enter the web panel domain, a separate VPN/account domain, a TLS certificate contact email, and the panel login username/password. The password is entered without echo, confirmed, and stored in the root-only `/etc/swock-devmanagement.env`; it is not written to the checkout or printed to the terminal. Use a password of at least 16 characters from letters, numbers, and `. _ @ % + = : -`. Point both domains' A records directly to the VPS before installing; the Let's Encrypt certificate covers both hostnames. The VPN domain is embedded in every profile URI, while the panel domain is used for the admin website. The server private key and panel environment are stored outside the Git checkout in `/etc`.
+During installation, enter the web panel domain, a separate VPN/account domain, a TLS certificate contact email, and the panel login username/password. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes. Password entry is hidden, confirmed, base64-encoded before being written to the root-only `/etc/swock-devmanagement.env`, and is never printed by the installer. VPN account passwords have no minimum length and are limited to 4096 UTF-8 bytes. Optional Linux SSH account passwords can be any non-empty single-line value up to 255 UTF-8 bytes, as required by the system password hash format. Point both domains' A records directly to the VPS before installing; the Let's Encrypt certificate covers both hostnames. The VPN domain is embedded in every profile URI, while the panel domain is used for the admin website. The server private key and panel environment are stored outside the Git checkout in `/etc`.
 
 The installer enables IPv4 forwarding and adds a dedicated nftables masquerade rule scoped to the tunnel subnet. It does not change the VPS provider firewall or an existing UFW/firewalld forwarding policy. If UFW is active, allow the listed inbound ports and allow routed traffic between `swock0` and the VPS default-route interface. For example, replace `ens3` with the interface shown by `ip -o -4 route show default`:
 
@@ -91,7 +91,7 @@ Back up `/var/lib/swock-devmanagement/`, `/var/lib/swock/`, `/etc/swock-devmanag
 Useful service checks:
 
 ```bash
-sudo systemctl status swock-devmanagement swock-server nginx
+sudo systemctl status swock-devmanagement swock-server swock-ssh-manager nginx
 curl -fsS https://<panel-domain>/api/health
 ```
 

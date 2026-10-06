@@ -11,13 +11,43 @@ const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const Database = require('better-sqlite3');
 
+function decodeAdminPassword() {
+  if (process.env.ADMIN_PASSWORD_B64) {
+    return Buffer.from(process.env.ADMIN_PASSWORD_B64, 'base64').toString('utf8');
+  }
+  return process.env.ADMIN_PASSWORD || '';
+}
+
+function validatePassword(password) {
+  if (typeof password !== 'string') {
+    throw new Error('Password must be text.');
+  }
+  const byteLength = Buffer.byteLength(password, 'utf8');
+  if (byteLength === 0 || byteLength > 4096) {
+    throw new Error('Password must not be empty and must be no more than 4096 UTF-8 bytes.');
+  }
+}
+
+function hashPassword(password) {
+  validatePassword(password);
+  const input = crypto.createHash('sha256').update(password, 'utf8').digest('hex');
+  return bcrypt.hashSync(input, 12);
+}
+
+function verifyPassword(password, passwordHash) {
+  if (typeof password !== 'string' || Buffer.byteLength(password, 'utf8') > 4096) return false;
+  const prehashed = crypto.createHash('sha256').update(password, 'utf8').digest('hex');
+  return bcrypt.compareSync(prehashed, passwordHash) || bcrypt.compareSync(password, passwordHash);
+}
+
 const app = express();
 const port = Number(process.env.PANEL_BIND_PORT || process.env.PORT || 8080);
 const dataDirectory = path.dirname(path.resolve(process.env.DB_FILE || './data/devmanagement.sqlite'));
 fs.mkdirSync(dataDirectory, { recursive: true });
 
-if (!process.env.SESSION_SECRET || !process.env.ADMIN_PASSWORD) {
-  throw new Error('SESSION_SECRET and ADMIN_PASSWORD must be set before starting the panel.');
+const adminPassword = decodeAdminPassword();
+if (!process.env.SESSION_SECRET || !adminPassword) {
+  throw new Error('SESSION_SECRET and ADMIN_PASSWORD_B64 (or legacy ADMIN_PASSWORD) must be set before starting the panel.');
 }
 
 const database = new Database(path.resolve(process.env.DB_FILE || './data/devmanagement.sqlite'));
@@ -46,7 +76,7 @@ if (!accountColumns.includes('client_public_key')) {
   database.exec('ALTER TABLE vpn_accounts ADD COLUMN client_public_key TEXT');
 }
 
-const adminPasswordHash = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 12);
+const adminPasswordHash = hashPassword(adminPassword);
 const queries = {
   list: database.prepare('SELECT id, username, expires_at, created_at, disabled FROM vpn_accounts ORDER BY created_at DESC'),
   deleteExpired: database.prepare("DELETE FROM vpn_accounts WHERE julianday(expires_at) <= julianday('now')"),
@@ -138,6 +168,15 @@ function deleteExpiredAccounts() {
 }
 
 function manageSshAccount(action, username, expiresAt, password = '') {
+  if (action === 'create') {
+    const passwordBytes = Buffer.byteLength(password, 'utf8');
+    if (passwordBytes === 0 || passwordBytes > 255) {
+      return Promise.reject(new Error('SSH passwords must be no more than 255 UTF-8 bytes.'));
+    }
+    if (/[\r\n\0]/.test(password)) {
+      return Promise.reject(new Error('SSH passwords cannot contain line breaks or NUL characters.'));
+    }
+  }
   const socketPath = process.env.SSH_MANAGER_SOCKET || '/run/swock-ssh-manager/manager.sock';
   return new Promise((resolve, reject) => {
     const client = net.createConnection({ path: socketPath });
@@ -184,10 +223,10 @@ function requireAdmin(request, response, next) {
 
 function validateAccountInput(body, requirePassword = true) {
   const username = String(body.username || '').trim().toLowerCase();
-  const password = String(body.password || '');
+  const password = String(body.password ?? '');
   const expiresAt = String(body.expiresAt || '');
   if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error('Username must be 3-32 characters: letters, numbers, dot, underscore, or hyphen.');
-  if (requirePassword && password.length < 12) throw new Error('Passwords must contain at least 12 characters.');
+  if (requirePassword) validatePassword(password);
   const expiry = new Date(expiresAt);
   if (Number.isNaN(expiry.valueOf()) || expiry <= new Date()) throw new Error('Expiry must be a future date and time.');
   return { username, password, expiresAt: expiry.toISOString() };
@@ -195,7 +234,7 @@ function validateAccountInput(body, requirePassword = true) {
 
 app.post('/api/admin/login', loginLimiter, (request, response) => {
   const { username, password } = request.body;
-  if (username !== process.env.ADMIN_USERNAME || !bcrypt.compareSync(String(password || ''), adminPasswordHash)) {
+  if (username !== process.env.ADMIN_USERNAME || !verifyPassword(String(password ?? ''), adminPasswordHash)) {
     return response.status(401).json({ error: 'Invalid administrator credentials.' });
   }
   request.session.admin = true;
@@ -268,7 +307,7 @@ app.delete('/api/admin/ssh-accounts/:id', requireAdmin, async (request, response
 app.post('/api/admin/accounts', requireAdmin, (request, response) => {
   try {
     const account = validateAccountInput(request.body);
-    const hash = bcrypt.hashSync(account.password, 12);
+    const hash = hashPassword(account.password);
       const clientKeys = createClientKeyPair();
       const profileUris = buildProfileUris(account, clientKeys);
       queries.create.run(account.username, hash, account.expiresAt, new Date().toISOString(), clientKeys.publicKey);
@@ -308,10 +347,13 @@ app.patch('/api/admin/accounts/:id', requireAdmin, (request, response) => {
 });
 
 app.post('/api/admin/accounts/:id/password', requireAdmin, (request, response) => {
-  const password = String(request.body.password || '');
-  if (password.length < 12) return response.status(400).json({ error: 'Passwords must contain at least 12 characters.' });
-  queries.resetPassword.run(bcrypt.hashSync(password, 12), Number(request.params.id));
-  return response.json({ ok: true });
+  try {
+    const password = String(request.body.password ?? '');
+    queries.resetPassword.run(hashPassword(password), Number(request.params.id));
+    return response.json({ ok: true });
+  } catch (error) {
+    return response.status(400).json({ error: error.message });
+  }
 });
 
 app.delete('/api/admin/accounts/:id', requireAdmin, (request, response) => {
@@ -323,7 +365,7 @@ app.delete('/api/admin/accounts/:id', requireAdmin, (request, response) => {
 app.post('/api/vpn/login', loginLimiter, (request, response) => {
   deleteExpiredAccounts();
   const account = queries.findByUsername.get(String(request.body.username || '').trim().toLowerCase());
-  if (!account || account.disabled || new Date(account.expires_at) <= new Date() || !bcrypt.compareSync(String(request.body.password || ''), account.password_hash)) {
+  if (!account || account.disabled || new Date(account.expires_at) <= new Date() || !verifyPassword(String(request.body.password ?? ''), account.password_hash)) {
     return response.status(401).json({ error: 'Invalid or expired VPN account.' });
   }
   return response.json({

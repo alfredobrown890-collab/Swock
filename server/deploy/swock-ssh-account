@@ -1,0 +1,76 @@
+#!/bin/sh
+set -eu
+
+action=${1:-}
+username=${2:-}
+expires_at=${3:-}
+
+case "$username" in
+  ''|*[!a-z0-9._-]*|[0-9]* ) echo 'Invalid SSH username.' >&2; exit 2 ;;
+esac
+
+schedule_expiry() {
+  expiry=$(date -d "$expires_at" --iso-8601=seconds 2>/dev/null) || { echo 'Invalid expiry timestamp.' >&2; exit 2; }
+  unit="swock-ssh-expire-${username}"
+  systemctl disable --now "${unit}.timer" 2>/dev/null || true
+  cat > "/etc/systemd/system/${unit}.service" <<EOF
+[Unit]
+Description=Expire managed SSH account ${username}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/usermod --lock ${username}
+EOF
+  cat > "/etc/systemd/system/${unit}.timer" <<EOF
+[Unit]
+Description=Expiry timer for managed SSH account ${username}
+
+[Timer]
+OnCalendar=${expiry}
+Persistent=true
+Unit=${unit}.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "${unit}.timer"
+}
+
+remove_expiry() {
+  unit="swock-ssh-expire-${username}"
+  systemctl disable --now "${unit}.timer" 2>/dev/null || true
+  rm -f "/etc/systemd/system/${unit}.service" "/etc/systemd/system/${unit}.timer"
+  systemctl daemon-reload
+}
+
+case "$action" in
+  create)
+    IFS= read -r password || true
+    password_bytes=$(printf '%s' "$password" | wc -c)
+    [ -n "$password" ] && [ "$password_bytes" -le 255 ] || { echo 'SSH passwords must not be empty and must be no more than 255 UTF-8 bytes.' >&2; exit 2; }
+    hash=$(printf '%s' "$password" | openssl passwd -6 -stdin) || { echo 'Unable to hash SSH password.' >&2; exit 1; }
+    unset password
+    id "$username" >/dev/null 2>&1 && { echo 'SSH username already exists on the VPS.' >&2; exit 2; }
+    /usr/sbin/useradd --create-home --shell /bin/bash "$username"
+    /usr/sbin/usermod --password "$hash" "$username"
+    unset hash
+    schedule_expiry
+    ;;
+  update)
+    id "$username" >/dev/null 2>&1 || { echo 'SSH account does not exist on the VPS.' >&2; exit 2; }
+    /usr/sbin/usermod --unlock "$username"
+    schedule_expiry
+    ;;
+  disable)
+    id "$username" >/dev/null 2>&1 || { echo 'SSH account does not exist on the VPS.' >&2; exit 2; }
+    remove_expiry
+    /usr/sbin/usermod --lock "$username"
+    ;;
+  delete)
+    id "$username" >/dev/null 2>&1 || { echo 'SSH account does not exist on the VPS.' >&2; exit 2; }
+    remove_expiry
+    /usr/sbin/userdel --remove "$username"
+    ;;
+  *) echo 'Unknown SSH account action.' >&2; exit 2 ;;
+esac

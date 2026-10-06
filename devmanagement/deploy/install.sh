@@ -20,7 +20,7 @@ read -r -p 'Web panel domain (for example, panel.example.com): ' panel_domain
 read -r -p 'VPN/account domain (for example, vpn.example.com): ' vpn_domain
 read -r -p 'Contact email for the TLS certificate: ' admin_email
 read -r -p 'Web panel login username: ' admin_username
-read -r -s -p 'Web panel login password (16-128 safe characters): ' admin_password
+read -r -s -p 'Choose a web panel password (any non-empty single-line password, up to 4096 UTF-8 bytes): ' admin_password
 printf '\n'
 read -r -s -p 'Confirm web panel login password: ' password_confirmation
 printf '\n'
@@ -37,16 +37,22 @@ if ! valid_domain "$vpn_domain"; then
 fi
 [[ $admin_email == *@*.* ]] || { echo 'Provide a valid contact email for the TLS certificate.' >&2; exit 2; }
 [[ $admin_username =~ ^[a-zA-Z0-9._-]{3,32}$ ]] || { echo 'Admin username must be 3-32 letters, numbers, dots, underscores, or hyphens.' >&2; exit 2; }
-[[ ${#admin_password} -ge 16 && ${#admin_password} -le 128 && $admin_password =~ ^[a-zA-Z0-9._@%+=:-]+$ ]] || {
-  echo 'Password must be 16-128 characters using letters, numbers, or these symbols: . _ @ % + = : -' >&2
+admin_password_bytes=$(printf '%s' "$admin_password" | wc -c)
+if [[ -z $admin_password || $admin_password_bytes -gt 4096 ]]; then
+  echo 'Password must not be empty and must be no more than 4096 UTF-8 bytes.' >&2
   exit 2
-}
+fi
 [[ $admin_password == "$password_confirmation" ]] || { echo 'Passwords do not match.' >&2; exit 2; }
 unset password_confirmation
+admin_password_b64=$(printf '%s' "$admin_password" | base64 | tr -d '\n')
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 [[ -f "$repo_root/server/go.mod" && -f "$repo_root/devmanagement/package-lock.json" ]] || {
   echo 'Run this script from a complete Swock checkout; server/ and devmanagement/ are both required.' >&2
+  exit 1
+}
+[[ -f "$repo_root/server/deploy/swock-ssh-manager.js" && -f "$repo_root/server/deploy/swock-ssh-account" && -f "$repo_root/server/deploy/swock-ssh-manager.service" ]] || {
+  echo 'The checkout is missing the SSH account manager deployment files.' >&2
   exit 1
 }
 
@@ -57,7 +63,7 @@ if [[ -e $env_file || -e $server_key || -e $nginx_site ]]; then
   echo 'A Swock installation already exists. Use deploy/update.sh to update it; do not reinstall over its secrets or database.' >&2
   exit 1
 fi
-if [[ -e /var/lib/swock/allowed-client-keys || -e /etc/systemd/system/swock-server.service || -e /etc/systemd/system/swock-devmanagement.service ]]; then
+if [[ -e /var/lib/swock/allowed-client-keys || -e /etc/systemd/system/swock-server.service || -e /etc/systemd/system/swock-devmanagement.service || -e /etc/systemd/system/swock-ssh-manager.service ]]; then
   echo 'Existing Swock data or service files were found. Refusing to overwrite them.' >&2
   exit 1
 fi
@@ -137,10 +143,14 @@ chown -R root:root /opt/swock-devmanagement
 chmod -R go-w /opt/swock-devmanagement
 
 install -d -m 0755 /usr/local/bin
+install -d -m 0755 /usr/local/lib
 cd "$repo_root/server"
 "$go_bin" build -trimpath -ldflags='-s -w' -o /usr/local/bin/swock-server ./cmd/swock-server
 "$go_bin" build -trimpath -ldflags='-s -w' -o /usr/local/bin/swock-keygen ./cmd/swock-keygen
 chmod 0755 /usr/local/bin/swock-server /usr/local/bin/swock-keygen
+install -m 0644 deploy/swock-ssh-manager.js /usr/local/lib/swock-ssh-manager.js
+install -m 0755 deploy/swock-ssh-account /usr/local/sbin/swock-ssh-account
+install -m 0644 deploy/swock-ssh-manager.service /etc/systemd/system/swock-ssh-manager.service
 
 install -d -o swock-panel -g swock -m 0750 /var/lib/swock-devmanagement
 install -d -o root -g swock -m 2770 /var/lib/swock
@@ -159,7 +169,7 @@ PORT=8080
 NODE_ENV=production
 SESSION_SECRET=$session_secret
 ADMIN_USERNAME=$admin_username
-ADMIN_PASSWORD=$admin_password
+ADMIN_PASSWORD_B64=$admin_password_b64
 DB_FILE=/var/lib/swock-devmanagement/devmanagement.sqlite
 VPN_SERVER_NAME=Swock VPN
 VPN_SERVER_HOST=$vpn_domain
@@ -175,7 +185,7 @@ VPN_WS_HOST=
 ENV
 chown root:root "$env_file"
 chmod 0600 "$env_file"
-unset session_secret server_public_key admin_password
+unset session_secret server_public_key admin_password admin_password_b64
 
 cat > /usr/local/sbin/swock-network-setup <<NETWORK
 #!/usr/bin/env bash
@@ -273,7 +283,7 @@ HOOK
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/50-swock-server
 
 systemctl daemon-reload
-systemctl enable --now swock-server.service swock-devmanagement.service
+systemctl enable --now swock-ssh-manager.service swock-server.service swock-devmanagement.service
 
 echo 'Swock self-hosted installation is complete.'
 echo "Panel URL: https://$panel_domain"
