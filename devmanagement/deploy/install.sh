@@ -35,6 +35,10 @@ if ! valid_domain "$vpn_domain"; then
   echo 'VPN/account domain must be a valid fully-qualified DNS hostname, not a URL or IP address.' >&2
   exit 2
 fi
+if [[ $panel_domain == "$vpn_domain" ]]; then
+  echo 'Panel and VPN/account domains must differ: port 443 is shared by SNI between the panel and the TLS tunnel.' >&2
+  exit 2
+fi
 [[ $admin_email == *@*.* ]] || { echo 'Provide a valid contact email for the TLS certificate.' >&2; exit 2; }
 [[ $admin_username =~ ^[a-zA-Z0-9._-]{3,32}$ ]] || { echo 'Admin username must be 3-32 letters, numbers, dots, underscores, or hyphens.' >&2; exit 2; }
 admin_password_bytes=$(printf '%s' "$admin_password" | wc -c)
@@ -76,7 +80,7 @@ command -v apt-get >/dev/null || { echo 'apt-get is required.' >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg jq nginx certbot python3-certbot-nginx nftables iproute2 build-essential python3 openssl
+apt-get install -y ca-certificates curl gnupg jq nginx certbot python3-certbot-nginx libnginx-mod-stream nftables iproute2 build-essential python3 openssl
 
 install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
@@ -178,8 +182,8 @@ VPN_SERVER_HOST=$vpn_domain
 VPN_SERVER_PUBLIC_KEY=$server_public_key
 VPN_ALLOWED_KEYS_FILE=/var/lib/swock/allowed-client-keys
 VPN_TCP_PORT=8505
-VPN_WS_PORT=801
-VPN_TLS_PORT=8443
+VPN_WS_PORT=80
+VPN_TLS_PORT=443
 VPN_WSS_PORT=9443
 VPN_TLS_SNI=$vpn_domain
 VPN_WS_PATH=/
@@ -203,10 +207,47 @@ printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-swock.conf
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 
 cat > "$nginx_site" <<NGINX
+# Port 80: WebSocket tunnel traffic goes to the Swock server; other requests (and ACME) are handled here.
 server {
     listen 80;
     listen [::]:80;
+    server_name $panel_domain $vpn_domain;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        if (\$http_upgrade != websocket) {
+            return 301 https://\$host\$request_uri;
+        }
+        proxy_pass http://127.0.0.1:801;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_read_timeout 1d;
+        proxy_send_timeout 1d;
+        proxy_buffering off;
+    }
+}
+NGINX
+ln -s "$nginx_site" /etc/nginx/sites-enabled/swock-devmanagement
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
+certificate_domains=(-d "$panel_domain" -d "$vpn_domain")
+install -d -m 0755 /var/www/html
+certbot certonly --webroot -w /var/www/html --non-interactive --agree-tos --email "$admin_email" "${certificate_domains[@]}"
+
+# HTTPS panel moves to loopback; the public port 443 is shared by SNI (stream) between panel and TLS tunnel.
+cat >> "$nginx_site" <<NGINX
+
+server {
+    listen 127.0.0.1:8444 ssl;
     server_name $panel_domain;
+    ssl_certificate /etc/letsencrypt/live/$panel_domain/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$panel_domain/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -214,18 +255,26 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 }
 NGINX
-ln -s "$nginx_site" /etc/nginx/sites-enabled/swock-devmanagement
+cat > /etc/nginx/modules-enabled/99-swock-stream.conf <<STREAM
+stream {
+    map \$ssl_preread_server_name \$swock_tls_backend {
+        $vpn_domain 127.0.0.1:8443;
+        default 127.0.0.1:8444;
+    }
+    server {
+        listen 443;
+        listen [::]:443;
+        ssl_preread on;
+        proxy_pass \$swock_tls_backend;
+    }
+}
+STREAM
 nginx -t
-systemctl enable --now nginx
-certificate_domains=(-d "$panel_domain")
-if [[ $vpn_domain != "$panel_domain" ]]; then
-  certificate_domains+=(-d "$vpn_domain")
-fi
-certbot --nginx --non-interactive --agree-tos --email "$admin_email" "${certificate_domains[@]}" --redirect
+systemctl reload nginx
 
 cat > /etc/systemd/system/swock-devmanagement.service <<'UNIT'
 [Unit]
@@ -264,7 +313,7 @@ ExecStartPre=/usr/sbin/ip addr replace 10.8.0.1/24 dev swock0
 ExecStartPre=/usr/sbin/ip link set dev swock0 up
 ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0
 ExecStartPre=/usr/local/sbin/swock-network-setup
-ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :8505,:801 -tls-listen :8443,:9443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
+ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :8505,127.0.0.1:801 -tls-listen 127.0.0.1:8443,:9443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -293,5 +342,5 @@ echo "Panel URL: https://$panel_domain"
 echo "Panel login username: $admin_username"
 echo 'Use the password you entered during setup.'
 echo "VPN/account domain: $vpn_domain"
-echo 'Required inbound TCP ports: 80, 443, 801, 8505, 8443, 9443'
+echo 'Required inbound TCP ports: 80 (WebSocket), 443 (TLS and panel), 8505 (TCP), 9443 (WSS)'
 echo 'Also allow routed traffic from 10.8.0.0/24 through the VPS firewall/provider firewall.'
