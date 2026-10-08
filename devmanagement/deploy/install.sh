@@ -86,6 +86,8 @@ printf 'deb [arch=%s signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nod
   > /etc/apt/sources.list.d/nodesource.list
 apt-get update
 apt-get install -y nodejs
+# Distro nodejs packages (e.g. Ubuntu 26.04) ship without npm; install it separately.
+command -v npm >/dev/null || apt-get install -y npm
 
 node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
 (( node_major >= 18 )) || { echo 'Node.js 18 or newer is required.' >&2; exit 1; }
