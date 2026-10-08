@@ -9,9 +9,9 @@ The Android app imports a `swock://` profile URI. The panel creates an account, 
 - A fresh Debian or Ubuntu VPS with a public IPv4 address and working `/dev/net/tun`
 - Two DNS hostnames whose A records point directly to that VPS: one for the web panel and one for VPN profiles
 - Root access for installation
-- Inbound TCP access through both the VPS provider firewall and the operating-system firewall for ports `80`, `443`, `801`, `8505`, `8443`, and `9443`
+- Inbound TCP access through both the VPS provider firewall and the operating-system firewall for ports `80`, `443`, `801`, and `8505`
 
-Port `80` is used by Nginx and Let's Encrypt. Port `443` serves the HTTPS admin panel. VPN transports listen on `801` (WebSocket), `8505` (TCP), `8443` (TLS), and `9443` (WebSocket over TLS).
+Nginx owns ports `80` and `443`. Port `80` carries Let's Encrypt validation (plain HTTP) and WebSocket-over-TLS tunnel traffic (a TLS handshake is routed to the tunnel server on loopback `9443`). Port `443` is split by SNI: the VPN domain goes to the TLS tunnel (loopback `8443`), the panel domain to the HTTPS panel. `801` (plain WebSocket) and `8505` (TCP) listen directly.
 
 ## Install
 
@@ -28,7 +28,7 @@ During installation, enter the web panel domain, a separate VPN/account domain, 
 The installer enables IPv4 forwarding, adds a route for `10.8.0.0/24` through `swock0`, and configures a dedicated nftables masquerade rule for the tunnel subnet. It does not change the VPS provider firewall or an existing UFW/firewalld forwarding policy. If UFW is active, allow the listed inbound ports and allow routed traffic between `swock0` and the VPS default-route interface. For example, replace `ens3` with the interface shown by `ip -o -4 route show default`:
 
 ```bash
-sudo ufw allow 80,443,801,8505,8443,9443/tcp
+sudo ufw allow 80,443,801,8505/tcp
 sudo ufw route allow in on swock0 out on ens3 from 10.8.0.0/24
 sudo ufw route allow in on ens3 out on swock0 to 10.8.0.0/24
 ```
@@ -72,10 +72,10 @@ The TLS/WebSocket transport ports installed by this guide are:
 | --- | ---: | --- |
 | TCP | `8505` | SWK2 packet protection |
 | WebSocket | `801` | WebSocket plus SWK2 packet protection |
-| TLS | `8443` | Verified TLS plus SWK2 packet protection |
-| WebSocket over TLS (recommended) | `9443` | Verified TLS, WebSocket, and SWK2 packet protection |
+| TLS | `443` | Verified TLS plus SWK2 packet protection |
+| WebSocket over TLS (recommended) | `80` | Verified TLS, WebSocket, and SWK2 packet protection |
 
-The HTTPS account panel uses port `443`; it is separate from the tunnel listeners. Port `80` is used for HTTP certificate validation and redirect handling. The installer configures IPv4 forwarding and NAT only; it does not configure IPv6 internet egress.
+The HTTPS account panel shares port `443` with the TLS tunnel via SNI. The installer configures IPv4 forwarding and NAT only; it does not configure IPv6 internet egress.
 
 ### Capacity And Upgrade
 
