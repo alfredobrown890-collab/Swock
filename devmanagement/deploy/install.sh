@@ -222,6 +222,7 @@ server {
     }
 }
 NGINX
+rm -f /etc/nginx/sites-enabled/default
 ln -s "$nginx_site" /etc/nginx/sites-enabled/swock-devmanagement
 nginx -t
 systemctl enable --now nginx
