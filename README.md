@@ -45,9 +45,9 @@ These controls do not hide connection metadata such as the VPS address, timing, 
 - An `amd64` or `arm64` VPS
 - Two DNS A records pointing directly to the VPS: one for the panel and one for the VPN service
 - Root access
-- Inbound TCP access for ports `80`, `443`, `8505`, and `9443`
+- Inbound TCP access for ports `80`, `443`, `801`, and `8505`
 
-Create both DNS records and allow the listed ports in the VPS provider firewall before installing. Port `80` carries certificate validation and the WebSocket tunnel, `443` is shared by SNI between the HTTPS panel and the TLS tunnel (the two domains must differ), and `8505` (TCP) and `9443` (WSS) serve the remaining transports.
+Create both DNS records and allow the listed ports in the VPS provider firewall before installing. Port `80` carries certificate validation and the WebSocket-over-TLS tunnel (nginx tells them apart by whether a TLS handshake arrives), `443` is shared by SNI between the HTTPS panel and the TLS tunnel (the two domains must differ), and `801` (plain WebSocket) and `8505` (TCP) serve the remaining transports.
 
 ## Full Installation
 

@@ -182,9 +182,9 @@ VPN_SERVER_HOST=$vpn_domain
 VPN_SERVER_PUBLIC_KEY=$server_public_key
 VPN_ALLOWED_KEYS_FILE=/var/lib/swock/allowed-client-keys
 VPN_TCP_PORT=8505
-VPN_WS_PORT=80
+VPN_WS_PORT=801
 VPN_TLS_PORT=443
-VPN_WSS_PORT=9443
+VPN_WSS_PORT=80
 VPN_TLS_SNI=$vpn_domain
 VPN_WS_PATH=/
 VPN_WS_HOST=
@@ -206,8 +206,8 @@ chmod 0755 /usr/local/sbin/swock-network-setup
 printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-swock.conf
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 
+# Phase 1: plain HTTP on port 80 so Let's Encrypt can validate the domains.
 cat > "$nginx_site" <<NGINX
-# Port 80: WebSocket tunnel traffic goes to the Swock server; other requests (and ACME) are handled here.
 server {
     listen 80;
     listen [::]:80;
@@ -218,17 +218,7 @@ server {
     }
 
     location / {
-        if (\$http_upgrade != websocket) {
-            return 301 https://\$host\$request_uri;
-        }
-        proxy_pass http://127.0.0.1:801;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_read_timeout 1d;
-        proxy_send_timeout 1d;
-        proxy_buffering off;
+        return 301 https://\$host\$request_uri;
     }
 }
 NGINX
@@ -240,8 +230,24 @@ certificate_domains=(-d "$panel_domain" -d "$vpn_domain")
 install -d -m 0755 /var/www/html
 certbot certonly --webroot -w /var/www/html --non-interactive --agree-tos --email "$admin_email" "${certificate_domains[@]}"
 
-# HTTPS panel moves to loopback; the public port 443 is shared by SNI (stream) between panel and TLS tunnel.
-cat >> "$nginx_site" <<NGINX
+# Phase 2: nginx stream owns public ports 80 and 443 and routes them to loopback backends.
+#   80  + TLS handshake  -> Swock WebSocket-over-TLS (127.0.0.1:9443)
+#   80  + plain HTTP     -> nginx HTTP (127.0.0.1:8081): ACME validation and HTTPS redirect
+#   443 + VPN domain SNI -> Swock TLS tunnel (127.0.0.1:8443)
+#   443 + other SNI      -> HTTPS panel (127.0.0.1:8444)
+cat > "$nginx_site" <<NGINX
+server {
+    listen 127.0.0.1:8081;
+    server_name $panel_domain $vpn_domain;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
 
 server {
     listen 127.0.0.1:8444 ssl;
@@ -261,15 +267,25 @@ server {
 NGINX
 cat > /etc/nginx/modules-enabled/99-swock-stream.conf <<STREAM
 stream {
-    map \$ssl_preread_server_name \$swock_tls_backend {
+    map \$ssl_preread_protocol \$swock_port80_backend {
+        default 127.0.0.1:9443;
+        "" 127.0.0.1:8081;
+    }
+    map \$ssl_preread_server_name \$swock_port443_backend {
         $vpn_domain 127.0.0.1:8443;
         default 127.0.0.1:8444;
+    }
+    server {
+        listen 80;
+        listen [::]:80;
+        ssl_preread on;
+        proxy_pass \$swock_port80_backend;
     }
     server {
         listen 443;
         listen [::]:443;
         ssl_preread on;
-        proxy_pass \$swock_tls_backend;
+        proxy_pass \$swock_port443_backend;
     }
 }
 STREAM
@@ -313,7 +329,7 @@ ExecStartPre=/usr/sbin/ip addr replace 10.8.0.1/24 dev swock0
 ExecStartPre=/usr/sbin/ip link set dev swock0 up
 ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0
 ExecStartPre=/usr/local/sbin/swock-network-setup
-ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :8505,127.0.0.1:801 -tls-listen 127.0.0.1:8443,:9443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
+ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :8505,:801 -tls-listen 127.0.0.1:8443,127.0.0.1:9443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -342,5 +358,5 @@ echo "Panel URL: https://$panel_domain"
 echo "Panel login username: $admin_username"
 echo 'Use the password you entered during setup.'
 echo "VPN/account domain: $vpn_domain"
-echo 'Required inbound TCP ports: 80 (WebSocket), 443 (TLS and panel), 8505 (TCP), 9443 (WSS)'
+echo 'Required inbound TCP ports: 80 (WebSocket over TLS), 443 (TLS and panel), 801 (WebSocket), 8505 (TCP)'
 echo 'Also allow routed traffic from 10.8.0.0/24 through the VPS firewall/provider firewall.'
