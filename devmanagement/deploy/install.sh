@@ -363,7 +363,7 @@ ReadWritePaths=/var/lib/swock-devmanagement /var/lib/swock
 WantedBy=multi-user.target
 UNIT
 
-cat > /etc/systemd/system/swock-server.service <<'UNIT'
+cat > /etc/systemd/system/swock-server.service <<UNIT
 [Unit]
 Description=Swock encrypted VPN tunnel
 After=network-online.target
@@ -376,7 +376,7 @@ ExecStartPre=/usr/sbin/ip addr replace 10.8.0.1/24 dev swock0
 ExecStartPre=/usr/sbin/ip link set dev swock0 up
 ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0
 ExecStartPre=/usr/local/sbin/swock-network-setup
-ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :$vpn_tcp_port,:$vpn_ws_port -tls-listen :$vpn_tls_port,127.0.0.1:19443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
+ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :${vpn_tcp_port},:${vpn_ws_port} -tls-listen :${vpn_tls_port},127.0.0.1:19443 -tls-cert /etc/letsencrypt/live/${panel_domain}/fullchain.pem -tls-key /etc/letsencrypt/live/${panel_domain}/privkey.pem -tun-name swock0
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -388,7 +388,6 @@ ReadWritePaths=/dev/net/tun /var/lib/swock
 [Install]
 WantedBy=multi-user.target
 UNIT
-sed -i "s/DOMAIN/$panel_domain/g" /etc/systemd/system/swock-server.service
 
 install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
 cat > /etc/letsencrypt/renewal-hooks/deploy/50-swock-server <<'HOOK'
