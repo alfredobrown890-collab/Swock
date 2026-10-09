@@ -264,6 +264,7 @@ func (s *server) handle(conn net.Conn) {
 	clientRoute := allowedIP.String()
 	s.mu.Lock()
 	if existing := s.clients[clientRoute]; existing != nil {
+		log.Printf("replacing existing client session %s for tunnel address %s", existing.conn.RemoteAddr(), clientRoute)
 		_ = existing.conn.Close()
 	}
 	s.clients[clientRoute] = c
@@ -282,23 +283,36 @@ func (s *server) handle(conn net.Conn) {
 	}
 	for {
 		var length uint32
-		if err := binary.Read(conn, binary.BigEndian, &length); err != nil || length < chacha20poly1305.Overhead || length > maxFrame {
+		if err := binary.Read(conn, binary.BigEndian, &length); err != nil {
+			log.Printf("client %s closed while reading frame length for %s: %v", conn.RemoteAddr(), clientRoute, err)
+			return
+		}
+		if length < chacha20poly1305.Overhead || length > maxFrame {
+			log.Printf("client %s sent invalid encrypted frame length %d for %s", conn.RemoteAddr(), length, clientRoute)
 			return
 		}
 		frame := make([]byte, length)
 		if _, err := io.ReadFull(conn, frame); err != nil {
+			log.Printf("client %s closed during encrypted frame for %s: %v", conn.RemoteAddr(), clientRoute, err)
 			return
 		}
 		packet, err := aead.Open(nil, nonce(c.rx), frame, nil)
 		if err != nil {
+			log.Printf("client %s sent an unauthenticated encrypted frame for %s: %v", conn.RemoteAddr(), clientRoute, err)
 			return
 		}
 		c.rx++
 		sourceIP, _, ok := ipv4PacketAddresses(packet)
-		if !ok || !sourceIP.Equal(c.tunnelIP) {
+		if !ok {
+			log.Printf("client %s sent a non-IPv4 packet on %s", conn.RemoteAddr(), clientRoute)
+			return
+		}
+		if !sourceIP.Equal(c.tunnelIP) {
+			log.Printf("client %s sent packet with source %s; expected %s", conn.RemoteAddr(), sourceIP, c.tunnelIP)
 			return
 		}
 		if _, err := s.tun.Write(packet); err != nil {
+			log.Printf("server TUN write failed for client %s on %s: %v", conn.RemoteAddr(), clientRoute, err)
 			return
 		}
 	}
