@@ -18,6 +18,10 @@ valid_domain() {
 
 read -r -p 'Web panel domain (for example, panel.example.com): ' panel_domain
 read -r -p 'VPN/account domain (for example, vpn.example.com): ' vpn_domain
+read -r -p 'VPN TCP port (1-65535): ' vpn_tcp_port
+read -r -p 'VPN WebSocket port (1-65535): ' vpn_ws_port
+read -r -p 'VPN TLS port (1-65535): ' vpn_tls_port
+read -r -p 'VPN WebSocket + TLS port (1-65535): ' vpn_wss_port
 read -r -p 'Contact email for the TLS certificate: ' admin_email
 read -r -p 'Web panel login username: ' admin_username
 read -r -s -p 'Choose a web panel password (any non-empty single-line password, up to 4096 UTF-8 bytes): ' admin_password
@@ -33,6 +37,29 @@ if ! valid_domain "$panel_domain"; then
 fi
 if ! valid_domain "$vpn_domain"; then
   echo 'VPN/account domain must be a valid fully-qualified DNS hostname, not a URL or IP address.' >&2
+  exit 2
+fi
+for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port" "$vpn_wss_port"; do
+  [[ $port =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || {
+    echo "VPN ports must be whole numbers from 1 to 65535 (got '$port')." >&2
+    exit 2
+  }
+done
+vpn_tcp_port=$((10#$vpn_tcp_port))
+vpn_ws_port=$((10#$vpn_ws_port))
+vpn_tls_port=$((10#$vpn_tls_port))
+vpn_wss_port=$((10#$vpn_wss_port))
+for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port" "$vpn_wss_port"; do
+  case $port in
+    22|80|443|8080)
+      echo "Port $port is reserved for SSH, the web panel, or its web proxy; choose another VPN port." >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ $vpn_tcp_port == "$vpn_tls_port" || $vpn_tcp_port == "$vpn_wss_port" ||
+      $vpn_ws_port == "$vpn_tls_port" || $vpn_ws_port == "$vpn_wss_port" ]]; then
+  echo 'Plain TCP/WebSocket ports may share a value, as may TLS/WebSocket+TLS ports, but plain and TLS listeners must use different ports.' >&2
   exit 2
 fi
 [[ $admin_email == *@*.* ]] || { echo 'Provide a valid contact email for the TLS certificate.' >&2; exit 2; }
@@ -51,11 +78,6 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
   echo 'Run this script from a complete Swock checkout; server/ and devmanagement/ are both required.' >&2
   exit 1
 }
-[[ -f "$repo_root/server/deploy/swock-ssh-manager.js" && -f "$repo_root/server/deploy/swock-ssh-account" && -f "$repo_root/server/deploy/swock-ssh-manager.service" ]] || {
-  echo 'The checkout is missing the SSH account manager deployment files.' >&2
-  exit 1
-}
-
 env_file=/etc/swock-devmanagement.env
 server_key=/etc/swock-server.private
 nginx_site=/etc/nginx/sites-available/swock-devmanagement
@@ -143,14 +165,11 @@ chown -R root:root /opt/swock-devmanagement
 chmod -R go-w /opt/swock-devmanagement
 
 install -d -m 0755 /usr/local/bin
-install -d -m 0755 /usr/local/lib /usr/local/sbin
+install -d -m 0755 /usr/local/sbin
 cd "$repo_root/server"
 "$go_bin" build -trimpath -ldflags='-s -w' -o /usr/local/bin/swock-server ./cmd/swock-server
 "$go_bin" build -trimpath -ldflags='-s -w' -o /usr/local/bin/swock-keygen ./cmd/swock-keygen
 chmod 0755 /usr/local/bin/swock-server /usr/local/bin/swock-keygen
-install -m 0644 deploy/swock-ssh-manager.js /usr/local/lib/swock-ssh-manager.js
-install -m 0755 deploy/swock-ssh-account /usr/local/sbin/swock-ssh-account
-install -m 0644 deploy/swock-ssh-manager.service /etc/systemd/system/swock-ssh-manager.service
 
 install -d -o swock-panel -g swock -m 0750 /var/lib/swock-devmanagement
 install -d -o root -g swock -m 2770 /var/lib/swock
@@ -175,10 +194,10 @@ VPN_SERVER_NAME=Swock VPN
 VPN_SERVER_HOST=$vpn_domain
 VPN_SERVER_PUBLIC_KEY=$server_public_key
 VPN_ALLOWED_KEYS_FILE=/var/lib/swock/allowed-client-keys
-VPN_TCP_PORT=8505
-VPN_WS_PORT=801
-VPN_TLS_PORT=8443
-VPN_WSS_PORT=9443
+VPN_TCP_PORT=$vpn_tcp_port
+VPN_WS_PORT=$vpn_ws_port
+VPN_TLS_PORT=$vpn_tls_port
+VPN_WSS_PORT=$vpn_wss_port
 VPN_TLS_SNI=$vpn_domain
 VPN_WS_PATH=/
 VPN_WS_HOST=
@@ -262,7 +281,7 @@ ExecStartPre=/usr/sbin/ip addr replace 10.8.0.1/24 dev swock0
 ExecStartPre=/usr/sbin/ip link set dev swock0 up
 ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0
 ExecStartPre=/usr/local/sbin/swock-network-setup
-ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :8505,:801 -tls-listen :8443,:9443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
+ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :$vpn_tcp_port,:$vpn_ws_port -tls-listen :$vpn_tls_port,:$vpn_wss_port -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -284,12 +303,12 @@ HOOK
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/50-swock-server
 
 systemctl daemon-reload
-systemctl enable --now swock-ssh-manager.service swock-server.service swock-devmanagement.service
+systemctl enable --now swock-server.service swock-devmanagement.service
 
 echo 'Swock self-hosted installation is complete.'
 echo "Panel URL: https://$panel_domain"
 echo "Panel login username: $admin_username"
 echo 'Use the password you entered during setup.'
 echo "VPN/account domain: $vpn_domain"
-echo 'Required inbound TCP ports: 80, 443, 801, 8505, 8443, 9443'
+echo "Required inbound TCP ports: 80, 443, $vpn_tcp_port, $vpn_ws_port, $vpn_tls_port, $vpn_wss_port"
 echo 'Also allow routed traffic from 10.8.0.0/24 through the VPS firewall/provider firewall.'

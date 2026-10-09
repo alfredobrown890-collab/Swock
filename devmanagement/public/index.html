@@ -41,17 +41,6 @@
           <dl id="credential-list"></dl>
         </section>
         <div class="table-wrap"><table><thead><tr><th>Account</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody id="accounts-body"></tbody></table></div>
-        <section class="ssh-section">
-          <header class="panel-header"><div><p class="eyebrow">VPS ACCESS</p><h2>SSH accounts</h2></div></header>
-          <form id="ssh-account-form" class="account-form">
-            <label>SSH username<input name="username" minlength="3" maxlength="32" required></label>
-            <label>Temporary password<input name="password" type="password" maxlength="255" required></label>
-            <label>Expires at<input name="expiresAt" type="datetime-local" required></label>
-            <button type="submit">Create SSH account</button>
-          </form>
-          <p id="ssh-message" class="message" role="status"></p>
-          <div class="table-wrap"><table><thead><tr><th>Account</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody id="ssh-accounts-body"></tbody></table></div>
-        </section>
       </div>
     </section>
   </main>

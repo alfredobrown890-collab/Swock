@@ -3,7 +3,6 @@ require('dotenv').config();
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const net = require('node:net');
 const express = require('express');
 const helmet = require('helmet');
 const session = require('express-session');
@@ -55,15 +54,6 @@ database.exec(`
     disabled INTEGER NOT NULL DEFAULT 0
   );
 `);
-database.exec(`
-  CREATE TABLE IF NOT EXISTS ssh_accounts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    disabled INTEGER NOT NULL DEFAULT 0
-  );
-`);
 const accountColumns = database.prepare('PRAGMA table_info(vpn_accounts)').all().map((column) => column.name);
 if (!accountColumns.includes('client_public_key')) {
   database.exec('ALTER TABLE vpn_accounts ADD COLUMN client_public_key TEXT');
@@ -86,11 +76,6 @@ const queries = {
   update: database.prepare('UPDATE vpn_accounts SET expires_at = ?, disabled = ? WHERE id = ?'),
   resetPassword: database.prepare('UPDATE vpn_accounts SET password_hash = ? WHERE id = ?'),
   remove: database.prepare('DELETE FROM vpn_accounts WHERE id = ?'),
-  listSsh: database.prepare('SELECT id, username, expires_at, created_at, disabled FROM ssh_accounts ORDER BY created_at DESC'),
-  createSsh: database.prepare('INSERT INTO ssh_accounts (username, expires_at, created_at) VALUES (?, ?, ?)'),
-  updateSsh: database.prepare('UPDATE ssh_accounts SET expires_at = ?, disabled = ? WHERE id = ?'),
-  findSsh: database.prepare('SELECT * FROM ssh_accounts WHERE id = ?'),
-  deleteSsh: database.prepare('DELETE FROM ssh_accounts WHERE id = ?'),
 };
 
 function allocateTunnelAddress() {
@@ -114,6 +99,14 @@ function keyToHex(key, property) {
 function createClientKeyPair() {
   const pair = crypto.generateKeyPairSync('x25519');
   return { publicKey: keyToHex(pair.publicKey, 'x'), privateKey: keyToHex(pair.privateKey, 'd') };
+}
+
+function configuredPort(name) {
+  const value = Number(process.env[name]);
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(`Set ${name} to the listener port selected during installation.`);
+  }
+  return value;
 }
 
 function buildProfileUri(account, clientKeys, endpoint) {
@@ -148,12 +141,11 @@ function buildProfileUri(account, clientKeys, endpoint) {
 }
 
 function profileEndpoints() {
-  const number = (name, fallback) => Number(process.env[name] || fallback);
   return [
-    { label: 'WebSocket + TLS (recommended)', transport: 'websocketTls', tls: true, port: number('VPN_WSS_PORT', 9443) },
-    { label: 'TLS', transport: 'tcp', tls: true, port: number('VPN_TLS_PORT', 8443) },
-    { label: 'WebSocket', transport: 'websocket', tls: false, port: number('VPN_WS_PORT', 801) },
-    { label: 'TCP', transport: 'tcp', tls: false, port: number('VPN_TCP_PORT', 8505) },
+    { label: 'WebSocket + TLS (recommended)', transport: 'websocketTls', tls: true, port: configuredPort('VPN_WSS_PORT') },
+    { label: 'TLS', transport: 'tcp', tls: true, port: configuredPort('VPN_TLS_PORT') },
+    { label: 'WebSocket', transport: 'websocket', tls: false, port: configuredPort('VPN_WS_PORT') },
+    { label: 'TCP', transport: 'tcp', tls: false, port: configuredPort('VPN_TCP_PORT') },
   ];
 }
 
@@ -179,27 +171,6 @@ function refreshTunnelAuthorization() {
 function deleteExpiredAccounts() {
   queries.deleteExpired.run();
   refreshTunnelAuthorization();
-}
-
-function manageSshAccount(action, username, expiresAt, password = '') {
-  const socketPath = process.env.SSH_MANAGER_SOCKET || '/run/swock-ssh-manager/manager.sock';
-  return new Promise((resolve, reject) => {
-    const client = net.createConnection({ path: socketPath });
-    let response = '';
-    const timeout = setTimeout(() => client.destroy(new Error('SSH account manager timed out.')), 20_000);
-    client.setEncoding('utf8');
-    client.on('connect', () => client.end(JSON.stringify({ action, username, expiresAt, password })));
-    client.on('data', (chunk) => { response += chunk; });
-    client.on('error', (error) => { clearTimeout(timeout); reject(error); });
-    client.on('end', () => {
-      clearTimeout(timeout);
-      try {
-        const result = JSON.parse(response);
-        if (!result.ok) throw new Error(result.error || 'Unable to update the SSH account.');
-        resolve();
-      } catch (error) { reject(error); }
-    });
-  });
 }
 
 deleteExpiredAccounts();
@@ -256,59 +227,6 @@ app.get('/api/admin/accounts', requireAdmin, (request, response) => {
   return response.json({ accounts: queries.list.all() });
 });
 
-app.get('/api/admin/ssh-accounts', requireAdmin, (request, response) => {
-  return response.json({ accounts: queries.listSsh.all() });
-});
-
-app.post('/api/admin/ssh-accounts', requireAdmin, async (request, response) => {
-  try {
-    const account = validateAccountInput(request.body);
-    const createdAt = new Date().toISOString();
-    const result = queries.createSsh.run(account.username, account.expiresAt, createdAt);
-    try {
-      await manageSshAccount('create', account.username, account.expiresAt, account.password);
-    } catch (error) {
-      queries.deleteSsh.run(result.lastInsertRowid);
-      throw error;
-    }
-    return response.status(201).json({ ok: true, credentials: {
-      username: account.username, password: account.password, expiresAt: account.expiresAt,
-      host: process.env.SSH_SERVER_HOST || process.env.VPN_SERVER_HOST || '',
-      port: Number(process.env.SSH_PORT || 22), protocol: 'SSH',
-      tlsHost: process.env.SSH_TLS_HOST || process.env.VPN_SERVER_HOST || '',
-      tlsPort: Number(process.env.SSH_TLS_PORT || 444),
-      webSocketHost: process.env.SSH_WS_HOST || process.env.VPN_SERVER_HOST || '',
-      webSocketPort: Number(process.env.SSH_WS_PORT || 8880),
-    }});
-  } catch (error) {
-    const message = error.code === 'SQLITE_CONSTRAINT_UNIQUE' ? 'That SSH username already exists.' : error.message;
-    return response.status(400).json({ error: message });
-  }
-});
-
-app.patch('/api/admin/ssh-accounts/:id', requireAdmin, async (request, response) => {
-  try {
-    const account = queries.findSsh.get(Number(request.params.id));
-    if (!account) throw new Error('SSH account not found.');
-    const expiresAt = new Date(String(request.body.expiresAt || account.expires_at));
-    if (Number.isNaN(expiresAt.valueOf()) || expiresAt <= new Date()) throw new Error('Expiry must be a future date and time.');
-    const disabled = request.body.disabled === true;
-    await manageSshAccount(disabled ? 'disable' : 'update', account.username, expiresAt.toISOString());
-    queries.updateSsh.run(expiresAt.toISOString(), disabled ? 1 : 0, account.id);
-    return response.json({ ok: true });
-  } catch (error) { return response.status(400).json({ error: error.message }); }
-});
-
-app.delete('/api/admin/ssh-accounts/:id', requireAdmin, async (request, response) => {
-  try {
-    const account = queries.findSsh.get(Number(request.params.id));
-    if (!account) throw new Error('SSH account not found.');
-    await manageSshAccount('delete', account.username, account.expires_at);
-    queries.deleteSsh.run(account.id);
-    return response.json({ ok: true });
-  } catch (error) { return response.status(400).json({ error: error.message }); }
-});
-
 app.post('/api/admin/accounts', requireAdmin, (request, response) => {
   try {
     deleteExpiredAccounts();
@@ -329,8 +247,8 @@ app.post('/api/admin/accounts', requireAdmin, (request, response) => {
           serverPublicKey: process.env.VPN_SERVER_PUBLIC_KEY || '',
           clientPrivateKey: clientKeys.privateKey,
           tunnelAddress: account.tunnelIp,
-          tlsPort: Number(process.env.VPN_TLS_PORT || 8443),
-          websocketPort: Number(process.env.VPN_WS_PORT || 801),
+          tlsPort: configuredPort('VPN_TLS_PORT'),
+          websocketPort: configuredPort('VPN_WS_PORT'),
           transport: 'websocketTls',
           profileUri: profileUris[0].uri,
           profileUris,
@@ -364,8 +282,8 @@ app.post('/api/admin/accounts/:id/profile', requireAdmin, (request, response) =>
     credentials.serverPublicKey = process.env.VPN_SERVER_PUBLIC_KEY || '';
     credentials.clientPrivateKey = clientKeys.privateKey;
     credentials.tunnelAddress = credentials.tunnelIp;
-    credentials.tlsPort = Number(process.env.VPN_TLS_PORT || 8443);
-    credentials.websocketPort = Number(process.env.VPN_WS_PORT || 801);
+    credentials.tlsPort = configuredPort('VPN_TLS_PORT');
+    credentials.websocketPort = configuredPort('VPN_WS_PORT');
     credentials.transport = 'websocketTls';
     refreshTunnelAuthorization();
     return response.json({ ok: true, credentials });
@@ -413,10 +331,10 @@ app.post('/api/vpn/login', loginLimiter, (request, response) => {
     expiresAt: account.expires_at,
     server: process.env.VPN_SERVER_HOST || null,
     transports: {
-      tcp: { port: Number(process.env.VPN_TCP_PORT || 8505) },
-      websocket: { port: Number(process.env.VPN_WS_PORT || 801) },
-      tls: { port: Number(process.env.VPN_TLS_PORT || 8443) },
-      websocketTls: { port: Number(process.env.VPN_WSS_PORT || 9443) },
+      tcp: { port: configuredPort('VPN_TCP_PORT') },
+      websocket: { port: configuredPort('VPN_WS_PORT') },
+      tls: { port: configuredPort('VPN_TLS_PORT') },
+      websocketTls: { port: configuredPort('VPN_WSS_PORT') },
     },
   });
 });

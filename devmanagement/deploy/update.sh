@@ -8,14 +8,46 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
   echo 'Run this script from a complete Swock checkout.' >&2
   exit 1
 }
-[[ -f "$repo_root/server/deploy/swock-ssh-manager.js" && -f "$repo_root/server/deploy/swock-ssh-account" && -f "$repo_root/server/deploy/swock-ssh-manager.service" ]] || {
-  echo 'The checkout is missing the SSH account manager deployment files.' >&2
-  exit 1
-}
 [[ -f /etc/swock-devmanagement.env && -f /etc/swock-server.private ]] || {
   echo 'No installed Swock server found; use install.sh for a fresh installation.' >&2
   exit 1
 }
+env_file=/etc/swock-devmanagement.env
+server_unit=/etc/systemd/system/swock-server.service
+[[ -f $server_unit ]] || { echo 'The installed swock-server systemd unit was not found.' >&2; exit 1; }
+grep -q -- '-listen ' "$server_unit" && grep -q -- '-tls-listen ' "$server_unit" || {
+  echo 'The installed tunnel service has no recognized listener arguments; refusing to change its configuration.' >&2
+  exit 1
+}
+
+ask_port() {
+  local name=$1 label=$2 value
+  read -r -p "$label (1-65535): " value
+  [[ $value =~ ^[0-9]{1,5}$ ]] && (( 10#$value >= 1 && 10#$value <= 65535 )) || {
+    echo "$label must be a whole number from 1 to 65535." >&2
+    exit 2
+  }
+  value=$((10#$value))
+  printf -v "$name" '%s' "$value"
+}
+
+ask_port vpn_tcp_port 'VPN TCP port'
+ask_port vpn_ws_port 'VPN WebSocket port'
+ask_port vpn_tls_port 'VPN TLS port'
+ask_port vpn_wss_port 'VPN WebSocket + TLS port'
+for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port" "$vpn_wss_port"; do
+  case $port in
+    22|80|443|8080)
+      echo "Port $port is reserved for SSH, the web panel, or its web proxy; choose another VPN port." >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ $vpn_tcp_port == "$vpn_tls_port" || $vpn_tcp_port == "$vpn_wss_port" ||
+      $vpn_ws_port == "$vpn_tls_port" || $vpn_ws_port == "$vpn_wss_port" ]]; then
+  echo 'Plain TCP/WebSocket ports may share a value, as may TLS/WebSocket+TLS ports, but plain and TLS listeners must use different ports.' >&2
+  exit 2
+fi
 
 export PATH="/usr/local/bin:/usr/local/go/bin:/usr/bin:/bin"
 go_bin=$(command -v go || true)
@@ -38,14 +70,53 @@ cd "$repo_root/server"
 "$go_bin" build -trimpath -ldflags='-s -w' -o "$build_directory/swock-keygen" ./cmd/swock-keygen
 install -m 0755 "$build_directory/swock-server" /usr/local/bin/swock-server
 install -m 0755 "$build_directory/swock-keygen" /usr/local/bin/swock-keygen
-install -d -m 0755 /usr/local/lib /usr/local/sbin
-install -m 0644 "$repo_root/server/deploy/swock-ssh-manager.js" /usr/local/lib/swock-ssh-manager.js
-install -m 0755 "$repo_root/server/deploy/swock-ssh-account" /usr/local/sbin/swock-ssh-account
-install -m 0644 "$repo_root/server/deploy/swock-ssh-manager.service" /etc/systemd/system/swock-ssh-manager.service
-install -m 0644 "$repo_root/server/deploy/swock-server.service" /etc/systemd/system/swock-server.service
+install -d -m 0755 /usr/local/sbin
+
+# Require ports explicitly and keep profile URIs in step with the server.
+set_env_value() {
+  local key=$1 value=$2 temporary
+  temporary=$(mktemp)
+  if grep -q "^${key}=" "$env_file"; then
+    sed "s|^${key}=.*|${key}=${value}|" "$env_file" > "$temporary"
+  else
+    cat "$env_file" > "$temporary"
+    printf '%s=%s\n' "$key" "$value" >> "$temporary"
+  fi
+  cat "$temporary" > "$env_file"
+  rm -f "$temporary"
+}
+set_env_value VPN_TCP_PORT "$vpn_tcp_port"
+set_env_value VPN_WS_PORT "$vpn_ws_port"
+set_env_value VPN_TLS_PORT "$vpn_tls_port"
+set_env_value VPN_WSS_PORT "$vpn_wss_port"
+chmod 0600 "$env_file"
+
+sed -i -E \
+  -e "s|-listen [^ ]+|-listen :${vpn_tcp_port},:${vpn_ws_port}|" \
+  -e "s|-tls-listen [^ ]+|-tls-listen :${vpn_tls_port},:${vpn_wss_port}|" \
+  "$server_unit"
+grep -q -- "-listen :${vpn_tcp_port},:${vpn_ws_port}" "$server_unit" || {
+  echo 'Could not update VPN listener ports in the systemd unit.' >&2
+  exit 1
+}
+grep -q -- "-tls-listen :${vpn_tls_port},:${vpn_wss_port}" "$server_unit" || {
+  echo 'Could not update VPN TLS listener ports in the systemd unit.' >&2
+  exit 1
+}
+if ! grep -Fq 'ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0' "$server_unit"; then
+  sed -i '/ExecStartPre=\/usr\/sbin\/ip link set dev swock0 up/a ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0' "$server_unit"
+fi
+
+# Remove the optional panel-managed SSH account feature. Existing Linux SSH
+# accounts are left untouched.
+systemctl disable --now swock-ssh-manager.service 2>/dev/null || true
+rm -f /etc/systemd/system/swock-ssh-manager.service \
+  /usr/local/lib/swock-ssh-manager.js /usr/local/sbin/swock-ssh-account
 
 systemctl daemon-reload
-systemctl enable --now swock-ssh-manager.service
 systemctl restart swock-devmanagement.service
 systemctl restart swock-server.service
-echo 'Swock panel, tunnel server, and SSH account manager updated. Existing accounts, signing keys, and environment settings were preserved.'
+echo 'Swock panel and tunnel server updated. Existing VPN accounts, signing keys, TLS certificates, and panel credentials were preserved.'
+echo 'Existing Linux SSH accounts were left untouched.'
+echo "Configured inbound VPN TCP ports: $vpn_tcp_port, $vpn_ws_port, $vpn_tls_port, $vpn_wss_port"
+echo 'Allow these ports in the VPS provider firewall and host firewall.'

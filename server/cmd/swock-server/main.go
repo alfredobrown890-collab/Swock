@@ -166,9 +166,11 @@ func main() {
 
 func splitListeners(value string) []string {
 	var listeners []string
+	seen := make(map[string]bool)
 	for _, address := range strings.Split(value, ",") {
-		if address = strings.TrimSpace(address); address != "" {
+		if address = strings.TrimSpace(address); address != "" && !seen[address] {
 			listeners = append(listeners, address)
+			seen[address] = true
 		}
 	}
 	return listeners
