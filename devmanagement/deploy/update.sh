@@ -75,7 +75,7 @@ fi
   exit 1
 }
 
-export PATH="/usr/local/bin:/usr/local/go/bin:/usr/bin:/bin"
+export PATH="/usr/local/bin:/usr/local/go/bin:/usr/sbin:/sbin:/usr/bin:/bin"
 go_bin=$(command -v go || true)
 [[ -n $go_bin ]] || { echo 'Go 1.22 or newer is required to update the tunnel server.' >&2; exit 1; }
 go_minor=$($go_bin version | sed -n 's/.* go1\.\([0-9][0-9]*\).*/\1/p')
