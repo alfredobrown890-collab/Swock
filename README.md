@@ -2,7 +2,7 @@
 
 Install a self-hosted Swock VPN server and account web panel on a Debian or Ubuntu VPS. Each installation manages its own users and connects them to that VPS.
 
-The installer is interactive: it asks for separate web-panel and VPN domains, a certificate contact email, a panel username, and a panel password. Password entry is hidden and confirmed before setup.
+The installer is interactive: it asks for separate web-panel and VPN domains, four VPN listener ports, a certificate contact email, a panel username, and a panel password. You choose the ports during installation; there are no preset VPN ports. Password entry is hidden and confirmed before setup.
 
 ## Why Swock
 
@@ -45,9 +45,9 @@ These controls do not hide connection metadata such as the VPS address, timing, 
 - An `amd64` or `arm64` VPS
 - Two DNS A records pointing directly to the VPS: one for the panel and one for the VPN service
 - Root access
-- Inbound TCP access for ports `80`, `443`, `801`, `8505`, `8443`, and `9443`
+- Inbound TCP access for ports `80`, `443`, and the four VPN listener ports you choose during installation
 
-Create both DNS records and allow the listed ports in the VPS provider firewall before installing. Port `80` is used for certificate validation, `443` serves the HTTPS panel, and the remaining ports serve VPN transports.
+Create both DNS records before installing. Port `80` is used for certificate validation, `443` serves the HTTPS panel, and the four ports you choose serve VPN transports. Ports must be from `1` to `65535`; ports `22`, `80`, `443`, and `8080` are reserved. TCP and WebSocket may share a port, and TLS and WebSocket+TLS may share a port. The plain and TLS listener ports must differ. Allow your chosen ports through the VPS provider firewall after setup.
 
 ## Full Installation
 
@@ -59,13 +59,34 @@ cd Swock
 sudo bash devmanagement/deploy/install.sh
 ```
 
-Enter the panel domain, VPN domain, certificate email, and panel login credentials when prompted. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes; the installer hides and confirms it. VPN account passwords also have no minimum length and may be up to 4096 UTF-8 bytes. The optional Linux SSH accounts accept single-line passwords up to 255 UTF-8 bytes.
+Enter the panel domain, VPN domain, all four VPN ports, certificate email, and panel login credentials when prompted. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes; the installer hides and confirms it. VPN account passwords also have no minimum length and may be up to 4096 UTF-8 bytes. The panel manages VPN accounts only; it does not create Linux SSH accounts.
 
-The installer installs Node.js, Go, Nginx, Certbot, and required system packages; builds the panel dependencies and Go tunnel server; installs the panel's restricted SSH account manager; obtains a Let's Encrypt certificate for both domains; generates the server key; configures the TUN device, IPv4 forwarding/NAT, and systemd services; and stores panel configuration securely in `/etc/swock-devmanagement.env`.
+The installer installs Node.js 20 (including npm), Go, Nginx, Certbot, and required system packages; installs the panel dependencies; builds the Go tunnel server; obtains a Let's Encrypt certificate for both domains; generates the server key; configures the TUN device, IPv4 forwarding/NAT, and systemd services; and stores panel configuration securely in `/etc/swock-devmanagement.env`. The installer runs `npm ci --omit=dev` automatically. To install the panel dependencies manually on an existing checkout, run:
+
+```bash
+cd /opt/swock-devmanagement
+npm ci --omit=dev
+```
 
 The VPN hostname is embedded in accounts' `swock://` profile URIs. Sign in to the web panel using the URL and credentials chosen during installation, create an account with an expiry, and send its profile URI privately to the user to import into the Swock app. The URI contains a private client key and must be treated as a credential.
 
 The installer does not modify an existing Swock installation. It does not configure the provider firewall, an existing UFW/firewalld routing policy, or IPv6 egress. Follow the [full VPS guide](devmanagement/README.md) for firewall routing, updates, backups, protocol details, and current service limits.
+
+## Uninstall
+
+From the repository checkout, remove the Swock services and binaries while preserving account data, configuration, and keys:
+
+```bash
+sudo bash devmanagement/deploy/uninstall.sh
+```
+
+To also permanently remove the account database, VPN allowlist, panel environment, and server private key, run:
+
+```bash
+sudo bash devmanagement/deploy/uninstall.sh --purge-data
+```
+
+Both modes require you to type `uninstall` to confirm. Back up `/var/lib/swock/`, `/var/lib/swock-devmanagement/`, `/etc/swock-devmanagement.env`, and `/etc/swock-server.private` before purging. Shared packages and Let's Encrypt certificates are left installed. The uninstaller does not reset the system-wide IPv4 forwarding setting because another service may rely on it.
 
 ## Upgrade Existing Installations
 
