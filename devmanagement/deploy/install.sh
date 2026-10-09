@@ -21,7 +21,7 @@ read -r -p 'VPN/account domain (for example, vpn.example.com): ' vpn_domain
 read -r -p 'VPN TCP port (1-65535): ' vpn_tcp_port
 read -r -p 'VPN WebSocket port (1-65535): ' vpn_ws_port
 read -r -p 'VPN TLS port (1-65535): ' vpn_tls_port
-read -r -p 'VPN WebSocket + TLS port (1-65535): ' vpn_wss_port
+read -r -p 'VPN WebSocket + TLS public port(s) through Nginx (80, 443, or 80,443): ' vpn_wss_ports_input
 read -r -p 'Contact email for the TLS certificate: ' admin_email
 read -r -p 'Web panel login username: ' admin_username
 read -r -s -p 'Choose a web panel password (any non-empty single-line password, up to 4096 UTF-8 bytes): ' admin_password
@@ -39,7 +39,7 @@ if ! valid_domain "$vpn_domain"; then
   echo 'VPN/account domain must be a valid fully-qualified DNS hostname, not a URL or IP address.' >&2
   exit 2
 fi
-for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port" "$vpn_wss_port"; do
+for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port"; do
   [[ $port =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || {
     echo "VPN ports must be whole numbers from 1 to 65535 (got '$port')." >&2
     exit 2
@@ -48,20 +48,41 @@ done
 vpn_tcp_port=$((10#$vpn_tcp_port))
 vpn_ws_port=$((10#$vpn_ws_port))
 vpn_tls_port=$((10#$vpn_tls_port))
-vpn_wss_port=$((10#$vpn_wss_port))
-for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port" "$vpn_wss_port"; do
+for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port"; do
   case $port in
-    22|80|443|8080)
-      echo "Port $port is reserved for SSH, the web panel, or its web proxy; choose another VPN port." >&2
+    22|80|443|3000|18081|18443|19443)
+      echo "Port $port is reserved for SSH, Nginx multiplexing, or an internal service; choose another VPN listener port." >&2
       exit 2
       ;;
   esac
 done
-if [[ $vpn_tcp_port == "$vpn_tls_port" || $vpn_tcp_port == "$vpn_wss_port" ||
-      $vpn_ws_port == "$vpn_tls_port" || $vpn_ws_port == "$vpn_wss_port" ]]; then
-  echo 'Plain TCP/WebSocket ports may share a value, as may TLS/WebSocket+TLS ports, but plain and TLS listeners must use different ports.' >&2
+IFS=',' read -r -a vpn_wss_ports <<< "$vpn_wss_ports_input"
+if ((${#vpn_wss_ports[@]} == 0)); then
+  echo 'Choose at least one supported WebSocket+TLS public port: 80 and/or 443.' >&2
   exit 2
 fi
+for index in "${!vpn_wss_ports[@]}"; do
+  vpn_wss_ports[$index]=${vpn_wss_ports[$index]//[[:space:]]/}
+  case ${vpn_wss_ports[$index]} in
+    80|443) ;;
+    *) echo "WebSocket+TLS public ports are multiplexed through Nginx; choose 80 and/or 443 (got '${vpn_wss_ports[$index]}')." >&2; exit 2 ;;
+  esac
+done
+vpn_wss_ports_csv=$(IFS=,; printf '%s' "${vpn_wss_ports[*]}")
+if [[ $vpn_wss_ports_csv == 80,443 ]]; then
+  vpn_wss_ports=(443 80)
+  vpn_wss_ports_csv=443,80
+fi
+if [[ $vpn_tcp_port == "$vpn_tls_port" || $vpn_ws_port == "$vpn_tls_port" ]]; then
+  echo 'Plain TCP/WebSocket ports may share a value, but the direct TLS listener must use a different port.' >&2
+  exit 2
+fi
+for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port" 3000 18081 18443 19443; do
+  if ss -H -ltn | awk -v suffix=":$port" '$4 ~ (suffix "$") { found=1 } END { exit !found }'; then
+    echo "Port $port is already in use by another service; choose an available VPN listener port." >&2
+    exit 2
+  fi
+done
 [[ $admin_email == *@*.* ]] || { echo 'Provide a valid contact email for the TLS certificate.' >&2; exit 2; }
 [[ $admin_username =~ ^[a-zA-Z0-9._-]{3,32}$ ]] || { echo 'Admin username must be 3-32 letters, numbers, dots, underscores, or hyphens.' >&2; exit 2; }
 admin_password_bytes=$(printf '%s' "$admin_password" | wc -c)
@@ -98,7 +119,7 @@ command -v apt-get >/dev/null || { echo 'apt-get is required.' >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg jq nginx certbot python3-certbot-nginx nftables iproute2 build-essential python3 openssl
+apt-get install -y ca-certificates curl gnupg jq nginx libnginx-mod-stream certbot nftables iproute2 build-essential python3 openssl
 
 install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
@@ -184,7 +205,8 @@ unset keypair private_key
 
 session_secret=$(openssl rand -hex 48)
 cat > "$env_file" <<ENV
-PORT=8080
+PORT=3000
+PANEL_BIND_PORT=3000
 NODE_ENV=production
 SESSION_SECRET=$session_secret
 ADMIN_USERNAME=$admin_username
@@ -197,7 +219,8 @@ VPN_ALLOWED_KEYS_FILE=/var/lib/swock/allowed-client-keys
 VPN_TCP_PORT=$vpn_tcp_port
 VPN_WS_PORT=$vpn_ws_port
 VPN_TLS_PORT=$vpn_tls_port
-VPN_WSS_PORT=$vpn_wss_port
+VPN_WSS_PORTS=$vpn_wss_ports_csv
+VPN_WSS_PORT=${vpn_wss_ports[0]}
 VPN_TLS_SNI=$vpn_domain
 VPN_WS_PATH=/
 VPN_WS_HOST=
@@ -219,30 +242,102 @@ chmod 0755 /usr/local/sbin/swock-network-setup
 printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-swock.conf
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 
-cat > "$nginx_site" <<NGINX
+for enabled_site in /etc/nginx/sites-enabled/*; do
+  [[ -e $enabled_site ]] || continue
+  case $(basename "$enabled_site") in
+    default|swock-devmanagement) rm -f "$enabled_site" ;;
+    *) echo "Found unrelated Nginx site '$enabled_site'; refusing to take over shared web ports." >&2; exit 1 ;;
+  esac
+done
+[[ -f /etc/nginx/modules-enabled/50-mod-stream.conf ]] || {
+  echo 'Nginx stream module did not load; cannot configure HTTP/TLS multiplexing.' >&2
+  exit 1
+}
+install -d -m 0755 /etc/nginx/streams-enabled /var/www/swock-acme
+if grep -Eq '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
+  grep -Fq 'include /etc/nginx/streams-enabled/*.conf;' /etc/nginx/nginx.conf || {
+    echo 'An unrelated Nginx stream configuration already exists; refusing to overwrite it.' >&2
+    exit 1
+  }
+else
+  cat >> /etc/nginx/nginx.conf <<'NGINX_STREAM_BLOCK'
+
+# BEGIN SWOCK STREAM ROUTING
+stream {
+    include /etc/nginx/streams-enabled/*.conf;
+}
+# END SWOCK STREAM ROUTING
+NGINX_STREAM_BLOCK
+fi
+cat > /etc/nginx/streams-enabled/swock.conf <<NGINX
+map \$ssl_preread_server_name \$swock_tls_upstream {
+    $vpn_domain 127.0.0.1:19443;
+    default 127.0.0.1:18443;
+}
+map \$ssl_preread_protocol \$swock_http_or_tls_upstream {
+    "" 127.0.0.1:18081;
+    default \$swock_tls_upstream;
+}
 server {
     listen 80;
-    listen [::]:80;
-    server_name $panel_domain;
+    proxy_pass \$swock_http_or_tls_upstream;
+    proxy_connect_timeout 5s;
+    proxy_timeout 1h;
+    ssl_preread on;
+}
+server {
+    listen 443;
+    proxy_pass \$swock_tls_upstream;
+    proxy_connect_timeout 5s;
+    proxy_timeout 1h;
+    ssl_preread on;
+}
+NGINX
+cat > "$nginx_site" <<NGINX
+server {
+    listen 127.0.0.1:18081;
+    server_name $panel_domain $vpn_domain;
 
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/swock-acme;
+    }
     location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        return 301 https://\$host\$request_uri;
     }
 }
 NGINX
 ln -s "$nginx_site" /etc/nginx/sites-enabled/swock-devmanagement
 nginx -t
-systemctl enable --now nginx
+systemctl enable nginx
+systemctl stop nginx 2>/dev/null || true
+systemctl start nginx
 certificate_domains=(-d "$panel_domain")
 if [[ $vpn_domain != "$panel_domain" ]]; then
   certificate_domains+=(-d "$vpn_domain")
 fi
-certbot --nginx --non-interactive --agree-tos --email "$admin_email" "${certificate_domains[@]}" --redirect
+certbot certonly --webroot --webroot-path /var/www/swock-acme --non-interactive --agree-tos \
+  --email "$admin_email" --cert-name "$panel_domain" "${certificate_domains[@]}"
+cat >> "$nginx_site" <<NGINX
+
+server {
+    listen 127.0.0.1:18443 ssl;
+    server_name $panel_domain;
+    ssl_certificate /etc/letsencrypt/live/$panel_domain/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$panel_domain/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+NGINX
+nginx -t
+systemctl reload nginx
 
 cat > /etc/systemd/system/swock-devmanagement.service <<'UNIT'
 [Unit]
@@ -281,7 +376,7 @@ ExecStartPre=/usr/sbin/ip addr replace 10.8.0.1/24 dev swock0
 ExecStartPre=/usr/sbin/ip link set dev swock0 up
 ExecStartPre=/usr/sbin/ip route replace 10.8.0.0/24 dev swock0
 ExecStartPre=/usr/local/sbin/swock-network-setup
-ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :$vpn_tcp_port,:$vpn_ws_port -tls-listen :$vpn_tls_port,:$vpn_wss_port -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
+ExecStart=/usr/local/bin/swock-server -private-key-file /etc/swock-server.private -allowed-client-key-file /var/lib/swock/allowed-client-keys -listen :$vpn_tcp_port,:$vpn_ws_port -tls-listen :$vpn_tls_port,127.0.0.1:19443 -tls-cert /etc/letsencrypt/live/DOMAIN/fullchain.pem -tls-key /etc/letsencrypt/live/DOMAIN/privkey.pem -tun-name swock0
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -298,6 +393,7 @@ sed -i "s/DOMAIN/$panel_domain/g" /etc/systemd/system/swock-server.service
 install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
 cat > /etc/letsencrypt/renewal-hooks/deploy/50-swock-server <<'HOOK'
 #!/usr/bin/env bash
+systemctl reload nginx
 systemctl try-restart swock-server.service
 HOOK
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/50-swock-server
@@ -310,5 +406,6 @@ echo "Panel URL: https://$panel_domain"
 echo "Panel login username: $admin_username"
 echo 'Use the password you entered during setup.'
 echo "VPN/account domain: $vpn_domain"
-echo "Required inbound TCP ports: 80, 443, $vpn_tcp_port, $vpn_ws_port, $vpn_tls_port, $vpn_wss_port"
+echo "Required inbound TCP ports: 80, 443, $vpn_tcp_port, $vpn_ws_port, $vpn_tls_port"
+echo "WebSocket+TLS profiles are available on public port(s): $vpn_wss_ports_csv"
 echo 'Also allow routed traffic from 10.8.0.0/24 through the VPS firewall/provider firewall.'

@@ -101,12 +101,17 @@ function createClientKeyPair() {
   return { publicKey: keyToHex(pair.publicKey, 'x'), privateKey: keyToHex(pair.privateKey, 'd') };
 }
 
-function configuredPort(name) {
-  const value = Number(process.env[name]);
-  if (!Number.isInteger(value) || value < 1 || value > 65535) {
-    throw new Error(`Set ${name} to the listener port selected during installation.`);
+function configuredPorts(name, fallbackName = '') {
+  const configured = process.env[name] || (fallbackName ? process.env[fallbackName] : '');
+  const values = String(configured || '').split(',').map((value) => Number(value.trim()));
+  if (!configured || values.some((value) => !Number.isInteger(value) || value < 1 || value > 65535)) {
+    throw new Error(`Set ${name} to the listener port or ports selected during installation.`);
   }
-  return value;
+  return [...new Set(values)];
+}
+
+function configuredPort(name) {
+  return configuredPorts(name)[0];
 }
 
 function buildProfileUri(account, clientKeys, endpoint) {
@@ -142,7 +147,12 @@ function buildProfileUri(account, clientKeys, endpoint) {
 
 function profileEndpoints() {
   return [
-    { label: 'WebSocket + TLS (recommended)', transport: 'websocketTls', tls: true, port: configuredPort('VPN_WSS_PORT') },
+    ...configuredPorts('VPN_WSS_PORTS', 'VPN_WSS_PORT').map((port) => ({
+      label: `WebSocket + TLS (port ${port}${port === 443 ? ', recommended' : ''})`,
+      transport: 'websocketTls',
+      tls: true,
+      port,
+    })),
     { label: 'TLS', transport: 'tcp', tls: true, port: configuredPort('VPN_TLS_PORT') },
     { label: 'WebSocket', transport: 'websocket', tls: false, port: configuredPort('VPN_WS_PORT') },
     { label: 'TCP', transport: 'tcp', tls: false, port: configuredPort('VPN_TCP_PORT') },
@@ -249,6 +259,7 @@ app.post('/api/admin/accounts', requireAdmin, (request, response) => {
           tunnelAddress: account.tunnelIp,
           tlsPort: configuredPort('VPN_TLS_PORT'),
           websocketPort: configuredPort('VPN_WS_PORT'),
+          websocketTlsPorts: configuredPorts('VPN_WSS_PORTS', 'VPN_WSS_PORT'),
           transport: 'websocketTls',
           profileUri: profileUris[0].uri,
           profileUris,
@@ -334,7 +345,10 @@ app.post('/api/vpn/login', loginLimiter, (request, response) => {
       tcp: { port: configuredPort('VPN_TCP_PORT') },
       websocket: { port: configuredPort('VPN_WS_PORT') },
       tls: { port: configuredPort('VPN_TLS_PORT') },
-      websocketTls: { port: configuredPort('VPN_WSS_PORT') },
+      websocketTls: {
+        port: configuredPorts('VPN_WSS_PORTS', 'VPN_WSS_PORT')[0],
+        ports: configuredPorts('VPN_WSS_PORTS', 'VPN_WSS_PORT'),
+      },
     },
   });
 });

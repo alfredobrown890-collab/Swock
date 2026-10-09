@@ -34,20 +34,40 @@ ask_port() {
 ask_port vpn_tcp_port 'VPN TCP port'
 ask_port vpn_ws_port 'VPN WebSocket port'
 ask_port vpn_tls_port 'VPN TLS port'
-ask_port vpn_wss_port 'VPN WebSocket + TLS port'
-for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port" "$vpn_wss_port"; do
+read -r -p 'VPN WebSocket + TLS public port(s) through Nginx (80, 443, or 80,443): ' vpn_wss_ports_input
+for port in "$vpn_tcp_port" "$vpn_ws_port" "$vpn_tls_port"; do
   case $port in
-    22|80|443|8080)
-      echo "Port $port is reserved for SSH, the web panel, or its web proxy; choose another VPN port." >&2
+    22|80|443|3000|18081|18443|19443)
+      echo "Port $port is reserved for SSH, Nginx multiplexing, or an internal service; choose another VPN listener port." >&2
       exit 2
       ;;
   esac
 done
-if [[ $vpn_tcp_port == "$vpn_tls_port" || $vpn_tcp_port == "$vpn_wss_port" ||
-      $vpn_ws_port == "$vpn_tls_port" || $vpn_ws_port == "$vpn_wss_port" ]]; then
-  echo 'Plain TCP/WebSocket ports may share a value, as may TLS/WebSocket+TLS ports, but plain and TLS listeners must use different ports.' >&2
+IFS=',' read -r -a vpn_wss_ports <<< "$vpn_wss_ports_input"
+if ((${#vpn_wss_ports[@]} == 0)); then
+  echo 'Choose at least one supported WebSocket+TLS public port: 80 and/or 443.' >&2
   exit 2
 fi
+for index in "${!vpn_wss_ports[@]}"; do
+  vpn_wss_ports[$index]=${vpn_wss_ports[$index]//[[:space:]]/}
+  case ${vpn_wss_ports[$index]} in
+    80|443) ;;
+    *) echo "WebSocket+TLS public ports are multiplexed through Nginx; choose 80 and/or 443 (got '${vpn_wss_ports[$index]}')." >&2; exit 2 ;;
+  esac
+done
+vpn_wss_ports_csv=$(IFS=,; printf '%s' "${vpn_wss_ports[*]}")
+if [[ $vpn_wss_ports_csv == 80,443 ]]; then
+  vpn_wss_ports=(443 80)
+  vpn_wss_ports_csv=443,80
+fi
+if [[ $vpn_tcp_port == "$vpn_tls_port" || $vpn_ws_port == "$vpn_tls_port" ]]; then
+  echo 'Plain TCP/WebSocket ports may share a value, but the direct TLS listener must use a different port.' >&2
+  exit 2
+fi
+[[ -f /etc/nginx/streams-enabled/swock.conf ]] || {
+  echo 'Nginx TLS multiplexing is not installed; use deploy/install.sh to migrate this VPS.' >&2
+  exit 1
+}
 
 export PATH="/usr/local/bin:/usr/local/go/bin:/usr/bin:/bin"
 go_bin=$(command -v go || true)
@@ -88,18 +108,21 @@ set_env_value() {
 set_env_value VPN_TCP_PORT "$vpn_tcp_port"
 set_env_value VPN_WS_PORT "$vpn_ws_port"
 set_env_value VPN_TLS_PORT "$vpn_tls_port"
-set_env_value VPN_WSS_PORT "$vpn_wss_port"
+set_env_value VPN_WSS_PORTS "$vpn_wss_ports_csv"
+set_env_value VPN_WSS_PORT "${vpn_wss_ports[0]}"
+set_env_value PORT 3000
+set_env_value PANEL_BIND_PORT 3000
 chmod 0600 "$env_file"
 
 sed -i -E \
   -e "s|-listen [^ ]+|-listen :${vpn_tcp_port},:${vpn_ws_port}|" \
-  -e "s|-tls-listen [^ ]+|-tls-listen :${vpn_tls_port},:${vpn_wss_port}|" \
+  -e "s|-tls-listen [^ ]+|-tls-listen :${vpn_tls_port},127.0.0.1:19443|" \
   "$server_unit"
 grep -q -- "-listen :${vpn_tcp_port},:${vpn_ws_port}" "$server_unit" || {
   echo 'Could not update VPN listener ports in the systemd unit.' >&2
   exit 1
 }
-grep -q -- "-tls-listen :${vpn_tls_port},:${vpn_wss_port}" "$server_unit" || {
+grep -q -- "-tls-listen :${vpn_tls_port},127.0.0.1:19443" "$server_unit" || {
   echo 'Could not update VPN TLS listener ports in the systemd unit.' >&2
   exit 1
 }
@@ -114,9 +137,12 @@ rm -f /etc/systemd/system/swock-ssh-manager.service \
   /usr/local/lib/swock-ssh-manager.js /usr/local/sbin/swock-ssh-account
 
 systemctl daemon-reload
+nginx -t
+systemctl reload nginx
 systemctl restart swock-devmanagement.service
 systemctl restart swock-server.service
 echo 'Swock panel and tunnel server updated. Existing VPN accounts, signing keys, TLS certificates, and panel credentials were preserved.'
 echo 'Existing Linux SSH accounts were left untouched.'
-echo "Configured inbound VPN TCP ports: $vpn_tcp_port, $vpn_ws_port, $vpn_tls_port, $vpn_wss_port"
+echo "Configured inbound VPN TCP ports: 80, 443, $vpn_tcp_port, $vpn_ws_port, $vpn_tls_port"
+echo "WebSocket+TLS profiles are available on public port(s): $vpn_wss_ports_csv"
 echo 'Allow these ports in the VPS provider firewall and host firewall.'

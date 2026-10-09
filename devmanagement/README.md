@@ -9,9 +9,9 @@ The Android app imports a `swock://` profile URI. The panel creates an account, 
 - A fresh Debian or Ubuntu VPS with a public IPv4 address and working `/dev/net/tun`
 - Two DNS hostnames whose A records point directly to that VPS: one for the web panel and one for VPN profiles
 - Root access for installation
-- Inbound TCP access through both the VPS provider firewall and the operating-system firewall for ports `80`, `443`, and the four VPN ports you select
+- Inbound TCP access through both the VPS provider firewall and the operating-system firewall for ports `80`, `443`, and the direct VPN ports you select
 
-Port `80` is used by Nginx and Let's Encrypt. Port `443` serves the HTTPS admin panel. The installer asks you to enter separate ports for TCP, WebSocket, TLS, and WebSocket over TLS.
+Nginx uses SNI/TLS multiplexing on public ports `80` and `443`. It routes HTTPS for the panel hostname to the panel and WSS for the VPN hostname to the tunnel server. Plain HTTP on port `80` remains available for Let's Encrypt challenges and redirects. During setup, choose direct TCP, WebSocket, and TLS ports, then choose WSS on `80`, `443`, or both. Direct VPN listeners cannot use `22`, `80`, `443`, or internal proxy ports. TCP and WebSocket may share a direct port; the direct TLS port must differ.
 
 ## Install
 
@@ -25,7 +25,7 @@ cd Swock
 sudo bash devmanagement/deploy/install.sh
 ```
 
-During installation, enter the panel domain, VPN/account domain, all four VPN ports, certificate email, and panel administrator credentials. Port entries are required; the installer does not offer or silently apply preset port values. Ports must be in the range `1`-`65535`. `22`, `80`, `443`, and `8080` are reserved for SSH, the web front end, and the local panel. TCP and WebSocket may share one plain port; TLS and WebSocket over TLS may share one TLS port. The plain and TLS listener groups must use different ports. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes. Password entry is hidden and confirmed, then base64-encoded in the root-only `/etc/swock-devmanagement.env`. Point both domains' A records directly to the VPS before installing; the Let's Encrypt certificate covers both hostnames. The VPN domain is embedded in every profile URI, while the panel domain is used for the admin website. The server private key and panel environment are stored outside the Git checkout in `/etc`.
+During installation, enter the panel domain, VPN/account domain, direct TCP/WebSocket/TLS ports, public WSS port(s), certificate email, and panel administrator credentials. Port entries are required; the installer does not offer or silently apply preset VPN listener ports. Direct port values must be in the range `1`-`65535`. WSS public ports are selected from `80` and `443`, with the `VPN_SERVER_HOST` SNI routed to the TLS tunnel listener by Nginx. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes. Password entry is hidden and confirmed, then base64-encoded in the root-only `/etc/swock-devmanagement.env`. Point both domains' A records directly to the VPS before installing; the Let's Encrypt certificate covers both hostnames. The VPN domain is embedded in every profile URI, while the panel domain is used for the admin website. The server private key and panel environment are stored outside the Git checkout in `/etc`.
 
 The installer adds NodeSource and installs Node.js 20, which includes `node` and `npm`. It installs the panel dependencies with:
 
@@ -36,14 +36,13 @@ npm ci --omit=dev
 
 These npm steps run automatically as part of installation. The script also installs Go if needed, builds the tunnel server, configures Nginx and TLS certificates, enables IPv4 forwarding, adds the tunnel-subnet route, and installs the nftables masquerade rule.
 
-The installer does not change the VPS provider firewall or an existing UFW/firewalld forwarding policy. If UFW is active, allow the listed inbound ports and allow routed traffic between `swock0` and the VPS default-route interface. For example, replace `ens3` with the interface shown by `ip -o -4 route show default`:
+The installer does not change the VPS provider firewall or an existing UFW/firewalld forwarding policy. If UFW is active, allow ports `80`, `443`, your direct VPN ports, and routed traffic between `swock0` and the VPS default-route interface. For example, replace `ens3` and the direct ports with the values you selected:
 
 ```bash
 read -r -p 'TCP port: ' vpn_tcp
 read -r -p 'WebSocket port: ' vpn_ws
 read -r -p 'TLS port: ' vpn_tls
-read -r -p 'WebSocket+TLS port: ' vpn_wss
-sudo ufw allow "80,443,$vpn_tcp,$vpn_ws,$vpn_tls,$vpn_wss/tcp"
+sudo ufw allow "80,443,$vpn_tcp,$vpn_ws,$vpn_tls/tcp"
 sudo ufw route allow in on swock0 out on ens3 from 10.8.0.0/24
 sudo ufw route allow in on ens3 out on swock0 to 10.8.0.0/24
 ```
@@ -88,9 +87,9 @@ The TLS/WebSocket transport ports installed by this guide are:
 | TCP | Entered during setup | SWK2 packet protection |
 | WebSocket | Entered during setup | WebSocket plus SWK2 packet protection |
 | TLS | Entered during setup | Verified TLS plus SWK2 packet protection |
-| WebSocket over TLS (recommended) | Entered during setup | Verified TLS, WebSocket, and SWK2 packet protection |
+| WebSocket over TLS (recommended) | Public `80` and/or `443` | Nginx routes TLS by SNI to the VPN server; verified TLS, WebSocket, and SWK2 packet protection |
 
-The HTTPS account panel uses port `443`; it is separate from the tunnel listeners. Port `80` is used for HTTP certificate validation and redirect handling. The installer configures IPv4 forwarding and NAT only; it does not configure IPv6 internet egress.
+The HTTPS account panel and WSS share port `443` through SNI routing. Port `80` carries both plain HTTP for certificate validation/redirects and TLS for WSS; Nginx distinguishes TLS ClientHello traffic from HTTP and routes it accordingly. The installer configures IPv4 forwarding and NAT only; it does not configure IPv6 internet egress.
 
 ### Capacity And Upgrade
 
@@ -101,7 +100,7 @@ The HTTPS account panel uses port `443`; it is separate from the tunnel listener
 
 ## Update And Backups
 
-Run updates or reinstall the panel and tunnel server from the same Git checkout. The updater asks you to enter all four VPN ports again, updates server listeners and generated profile URIs together, and preserves account data, server keys, certificates, and administrator credentials:
+Run updates or reinstall the panel and tunnel server from the same Git checkout. The updater asks you to enter the direct listener ports and WSS public port(s) again, updates server listeners and generated profile URIs together, and preserves account data, server keys, certificates, and administrator credentials:
 
 ```bash
 cd swock
@@ -147,7 +146,7 @@ npm ci
 npm start
 ```
 
-The panel is available at `http://localhost:8080`. Set all four `VPN_*_PORT` values to the listener ports configured on the local tunnel server. For issued profiles to import successfully, `VPN_SERVER_HOST` and a 64-character hexadecimal `VPN_SERVER_PUBLIC_KEY` are required. `VPN_ALLOWED_KEYS_FILE` must point to the allowlist file consumed by the matching Swock tunnel server. Do not use placeholder values for a real install.
+The panel is available at `http://localhost:8080`. For issued profiles to import successfully, `VPN_SERVER_HOST`, a 64-character hexadecimal `VPN_SERVER_PUBLIC_KEY`, `VPN_TCP_PORT`, `VPN_WS_PORT`, and `VPN_TLS_PORT` must match the local tunnel server. Set at least one public WSS port in `VPN_WSS_PORTS` (or the legacy single `VPN_WSS_PORT`). `VPN_ALLOWED_KEYS_FILE` must point to the allowlist file consumed by the matching Swock tunnel server. Do not use placeholder values for a real install.
 
 ## API
 

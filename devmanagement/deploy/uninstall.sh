@@ -24,6 +24,7 @@ rm -f \
   /etc/systemd/system/swock-devmanagement.service \
   /etc/systemd/system/swock-server.service \
   /etc/systemd/system/swock-ssh-manager.service \
+  /etc/nginx/streams-enabled/swock.conf \
   /etc/nginx/sites-enabled/swock-devmanagement \
   /etc/nginx/sites-available/swock-devmanagement \
   /etc/letsencrypt/renewal-hooks/deploy/50-swock-server \
@@ -34,6 +35,10 @@ rm -f \
   /usr/local/bin/swock-keygen \
   /etc/sysctl.d/99-swock.conf
 rm -rf /opt/swock-devmanagement
+rmdir /etc/nginx/streams-enabled 2>/dev/null || true
+if [[ -f /etc/nginx/nginx.conf ]]; then
+  sed -i '/# BEGIN SWOCK STREAM ROUTING/,/# END SWOCK STREAM ROUTING/d' /etc/nginx/nginx.conf
+fi
 rmdir /etc/letsencrypt/renewal-hooks/deploy 2>/dev/null || true
 
 if command -v nft >/dev/null 2>&1; then

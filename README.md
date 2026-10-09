@@ -2,7 +2,7 @@
 
 Install a self-hosted Swock VPN server and account web panel on a Debian or Ubuntu VPS. Each installation manages its own users and connects them to that VPS.
 
-The installer is interactive: it asks for separate web-panel and VPN domains, four VPN listener ports, a certificate contact email, a panel username, and a panel password. You choose the ports during installation; there are no preset VPN ports. Password entry is hidden and confirmed before setup.
+The installer is interactive: it asks for separate web-panel and VPN domains, direct TCP/WebSocket/TLS listener ports, public WebSocket+TLS port(s), a certificate contact email, a panel username, and a panel password. You choose the ports during installation; there are no preset VPN listener ports. Password entry is hidden and confirmed before setup.
 
 ## Why Swock
 
@@ -45,9 +45,9 @@ These controls do not hide connection metadata such as the VPS address, timing, 
 - An `amd64` or `arm64` VPS
 - Two DNS A records pointing directly to the VPS: one for the panel and one for the VPN service
 - Root access
-- Inbound TCP access for ports `80`, `443`, and the four VPN listener ports you choose during installation
+- Inbound TCP access for ports `80`, `443`, and the direct VPN listener ports you choose during installation
 
-Create both DNS records before installing. Port `80` is used for certificate validation, `443` serves the HTTPS panel, and the four ports you choose serve VPN transports. Ports must be from `1` to `65535`; ports `22`, `80`, `443`, and `8080` are reserved. TCP and WebSocket may share a port, and TLS and WebSocket+TLS may share a port. The plain and TLS listener ports must differ. Allow your chosen ports through the VPS provider firewall after setup.
+Create both DNS records before installing. Nginx uses SNI/TLS multiplexing on public ports `80` and `443`: plain HTTP on `80` is used for certificate validation and redirects, HTTPS for the panel is routed by hostname, and WSS traffic for the VPN hostname is passed through to the VPN server. The installer asks you to choose direct TCP, WebSocket, and TLS ports, then choose WSS on `80`, `443`, or both. Direct listeners cannot use `22`, `80`, `443`, or internal proxy ports. TCP and WebSocket may share a direct port; the direct TLS port must be distinct. Allow public `80`, `443`, and your selected direct VPN ports through the VPS provider firewall after setup.
 
 ## Full Installation
 
@@ -59,9 +59,9 @@ cd Swock
 sudo bash devmanagement/deploy/install.sh
 ```
 
-Enter the panel domain, VPN domain, all four VPN ports, certificate email, and panel login credentials when prompted. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes; the installer hides and confirms it. VPN account passwords also have no minimum length and may be up to 4096 UTF-8 bytes. The panel manages VPN accounts only; it does not create Linux SSH accounts.
+Enter the panel domain, VPN domain, three direct VPN ports, WSS public port(s), certificate email, and panel login credentials when prompted. Choose any non-empty, single-line panel password up to 4096 UTF-8 bytes; the installer hides and confirms it. VPN account passwords also have no minimum length and may be up to 4096 UTF-8 bytes. The panel manages VPN accounts only; it does not create Linux SSH accounts.
 
-The installer installs Node.js 20 (including npm), Go, Nginx, Certbot, and required system packages; installs the panel dependencies; builds the Go tunnel server; obtains a Let's Encrypt certificate for both domains; generates the server key; configures the TUN device, IPv4 forwarding/NAT, and systemd services; and stores panel configuration securely in `/etc/swock-devmanagement.env`. The installer runs `npm ci --omit=dev` automatically. To install the panel dependencies manually on an existing checkout, run:
+The installer installs Node.js 20 (including npm), Go, Nginx and its stream module, Certbot, and required system packages; installs the panel dependencies; builds the Go tunnel server; obtains a Let's Encrypt certificate for both domains; generates the server key; configures Nginx SNI/TLS multiplexing, the TUN device, IPv4 forwarding/NAT, and systemd services; and stores panel configuration securely in `/etc/swock-devmanagement.env`. The installer runs `npm ci --omit=dev` automatically. To install the panel dependencies manually on an existing checkout, run:
 
 ```bash
 cd /opt/swock-devmanagement
