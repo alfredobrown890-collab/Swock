@@ -20,7 +20,7 @@ grep -q -- '-listen ' "$server_unit" && grep -q -- '-tls-listen ' "$server_unit"
   exit 1
 }
 nginx_site=/etc/nginx/sites-available/swock-devmanagement
-certificate_name=$(sed -nE 's#^[[:space:]]*ssl_certificate[[:space:]]+/etc/letsencrypt/live/([^/]+)/fullchain\\.pem;.*#\\1#p' "$nginx_site" | head -n 1)
+certificate_name=$(sed -nE 's#^[[:space:]]*ssl_certificate[[:space:]]+/etc/letsencrypt/live/([^/]+)/fullchain\.pem;.*#\1#p' "$nginx_site" | head -n 1)
 [[ -n $certificate_name && -r "/etc/letsencrypt/live/$certificate_name/fullchain.pem" && -r "/etc/letsencrypt/live/$certificate_name/privkey.pem" ]] || {
   echo 'Could not identify the active TLS certificate for the VPN listener.' >&2
   exit 1
