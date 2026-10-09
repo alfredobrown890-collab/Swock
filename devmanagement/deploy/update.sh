@@ -19,6 +19,12 @@ grep -q -- '-listen ' "$server_unit" && grep -q -- '-tls-listen ' "$server_unit"
   echo 'The installed tunnel service has no recognized listener arguments; refusing to change its configuration.' >&2
   exit 1
 }
+nginx_site=/etc/nginx/sites-available/swock-devmanagement
+certificate_name=$(sed -nE 's#^[[:space:]]*ssl_certificate[[:space:]]+/etc/letsencrypt/live/([^/]+)/fullchain\\.pem;.*#\\1#p' "$nginx_site" | head -n 1)
+[[ -n $certificate_name && -r "/etc/letsencrypt/live/$certificate_name/fullchain.pem" && -r "/etc/letsencrypt/live/$certificate_name/privkey.pem" ]] || {
+  echo 'Could not identify the active TLS certificate for the VPN listener.' >&2
+  exit 1
+}
 
 ask_port() {
   local name=$1 label=$2 value
@@ -117,6 +123,8 @@ chmod 0600 "$env_file"
 sed -i -E \
   -e "s|-listen [^ ]+|-listen :${vpn_tcp_port},:${vpn_ws_port}|" \
   -e "s|-tls-listen [^ ]+|-tls-listen :${vpn_tls_port},127.0.0.1:19443|" \
+  -e "s|-tls-cert [^ ]+|-tls-cert /etc/letsencrypt/live/${certificate_name}/fullchain.pem|" \
+  -e "s|-tls-key [^ ]+|-tls-key /etc/letsencrypt/live/${certificate_name}/privkey.pem|" \
   "$server_unit"
 grep -q -- "-listen :${vpn_tcp_port},:${vpn_ws_port}" "$server_unit" || {
   echo 'Could not update VPN listener ports in the systemd unit.' >&2
